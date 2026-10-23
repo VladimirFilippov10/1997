@@ -431,6 +431,44 @@ class Renderer:
                     pygame.draw.rect(self.screen, (58, 56, 54),
                                      (sx - TILE // 2, sy - 6, TILE, 12), 1)
                     self._blit_n += 1
+            elif o["t"] == "awning":
+                sx, sy = o["x"] - camx, o["y"] - camy
+                if -o.get("size", 8) * TILE < sx < WINDOW_W + TILE:
+                    img = self._prop_cache.get(("awning", o.get("size"), o.get("seed")))
+                    if img is None:
+                        img = T.awning(o.get("size", 8), o.get("seed", 1))
+                        self._prop_cache[("awning", o.get("size"), o.get("seed"))] = img
+                    self.screen.blit(img, img.get_rect(midbottom=(sx, sy)))
+                    self._blit_n += 1
+        # ---- вывески магазинов (Ломоносова): рисуются поверх статичной карты
+        for sg in getattr(d, "signs", []):
+            sx, sy = sg["x"] - camx, sg["y"] - camy
+            if -200 < sx < WINDOW_W + 200 and -60 < sy < WINDOW_H + 60:
+                sf = get_font(13, bold=True)
+                txt = sf.render(sg["text"], True, (232, 224, 190))
+                rect = txt.get_rect(center=(int(sx), int(sy)))
+                bg = pygame.Surface((rect.width + 12, rect.height + 6), pygame.SRCALPHA)
+                bg.fill((24, 22, 28, 210))
+                self.screen.blit(bg, (rect.left - 6, rect.top - 3))
+                pygame.draw.rect(self.screen, (70, 66, 60),
+                                 (rect.left - 6, rect.top - 3,
+                                  rect.width + 12, rect.height + 6), 1)
+                self.screen.blit(txt, rect)
+                self._blit_n += 2
+        # ---- ночные огоньки ларьков
+        if self.night > 0.2:
+            for lx, ly in getattr(d, "stall_lights", []):
+                if view.inflate(120, 120).collidepoint(lx, ly):
+                    sx, sy = lx - camx, ly - camy
+                    k = 0.75 + 0.25 * math.sin(time_s * 3.1 + lx * 0.07)
+                    halo = pygame.Surface((26, 26), pygame.SRCALPHA)
+                    pygame.draw.circle(halo, (255, 210, 120, int(90 * k * self.night)),
+                                       (13, 13), 11)
+                    pygame.draw.circle(halo, (255, 236, 180, int(220 * k)),
+                                       (13, 13), 3)
+                    self.screen.blit(halo, (sx - 13, sy - 20))
+                    lights.append((sx, sy - 14, 0.6 * k))
+                    self._blit_n += 1
         # пар из вентилей теплотрассы
         if self.weather:
             for vx, vy in d.vents:
