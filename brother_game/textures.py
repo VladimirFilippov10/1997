@@ -99,48 +99,85 @@ def mottle(size, colors, seed, blobs=40):
 
 # --------------------------------------------------------------- тайлы земли
 def asphalt(size=64, seed=1):
-    """Асфальт: многослойный шум + «жирные» пятна старого покрытия,
-    латки ремонтных служб,Aggregate-вкрапления гравия, трещины-«паутинка»."""
-    s = noise_surface((size, size), (58, 60, 64), 44, seed, octaves=5)
+    """Мокрый питерский асфальт осени-97: мелкозернистое чёрно-серое
+    полотно, следы шин, заплатки разного возраста, сеть трещин, лужицы
+    с лёгким бензиновым переливом. Тон — тёмно-серый, холодный."""
     rnd = _rng(seed)
-    # вкрапления гравия (светлые/тёмные точки)
-    for _ in range(size * size // 26):
+    # базовое полотно: плотное зерно (bitumen + щебня мелкой фракции)
+    s = noise_surface((size, size), (52, 54, 58), 26, seed, octaves=4)
+    # микрозерно — отдельные камушки, светлее и темнее фона
+    for _ in range(size * size // 14):
         x, y = rnd.randrange(size), rnd.randrange(size)
-        v = rnd.randint(-26, 30)
-        c = tuple(max(0, min(255, 58 + v + rnd.randint(-4, 4))) for _ in range(3))
-        s.set_at((x, y), ((c[0] + 8, c[1] + 6, c[2] + 4) if v > 12 else c))
-    # битумные пятна («масляные разводы» из гаражей)
-    for _ in range(2):
-        cx, cy = rnd.randrange(size), rnd.randrange(size)
-        rr = rnd.randint(4, 9)
-        patch = pygame.Surface((rr * 2, rr * 2), pygame.SRCALPHA)
-        for i in range(rr, 0, -1):
-            a = int(26 * (1 - i / rr))
-            pygame.draw.circle(patch, (26, 26, 30, a), (rr, rr), i)
-        s.blit(patch, (cx - rr, cy - rr))
-    # латок ремонта (прямоугольный, темнее и ровнее)
-    if rnd.random() < 0.3:
-        px_, py_ = rnd.randrange(size - 18), rnd.randrange(size - 12)
-        pw, ph = rnd.randint(12, 20), rnd.randint(8, 14)
-        p = noise_surface((pw, ph), (48, 49, 52), 18, seed + 31, octaves=2)
-        s.blit(p, (px_, py_))
-        pygame.draw.rect(s, (42, 43, 46), (px_, py_, pw, ph), 1)
-    # трещины — ветвящиеся «паутинки»
+        v = rnd.randint(-16, 20)
+        g = max(0, min(255, 54 + v))
+        tint = (g, g + rnd.randint(0, 3), g + rnd.randint(1, 5))
+        s.set_at((x, y), tint)
+    # волны старого покрытия — широкие мягкие тональные полосы
+    band = pygame.Surface((size, size), pygame.SRCALPHA)
     for _ in range(3):
-        x, y = rnd.randrange(size), rnd.randrange(size)
-        pts = [(x, y)]
+        yy = rnd.randrange(size)
+        a = rnd.randint(8, 16)
+        col = (30, 32, 36, a) if rnd.random() < 0.6 else (84, 88, 94, a // 2)
+        pygame.draw.line(band, col, (0, yy), (size, yy + rnd.randint(-6, 6)),
+                         rnd.randint(6, 14))
+    s.blit(band, (0, 0))
+    # следы протектора (Г-образные «дорожки торможения»)
+    for _ in range(2):
+        x0, y0 = rnd.randrange(size), rnd.randrange(size)
+        ln = rnd.randint(10, 24)
+        pygame.draw.line(s, (44, 45, 49), (x0, y0), (x0 + ln, y0 + ln // 3), 2)
+        pygame.draw.line(s, (46, 47, 51), (x0, y0 + 3), (x0 + ln, y0 + 3 + ln // 3), 2)
+    # заплатки ремонтных служб — свежий чёрный асфальт со «ступенькой» края
+    if rnd.random() < 0.45:
+        px_, py_ = rnd.randrange(max(1, size - 22)), rnd.randrange(max(1, size - 16))
+        pw, ph = rnd.randint(14, 24), rnd.randint(10, 16)
+        p = noise_surface((pw, ph), (42, 43, 46), 12, seed + 31, octaves=2)
+        s.blit(p, (px_, py_))
+        # фаска края: сверху светлее, снизу тень
+        pygame.draw.line(s, (66, 68, 72), (px_, py_), (px_ + pw, py_))
+        pygame.draw.line(s, (32, 33, 36), (px_, py_ + ph - 1), (px_ + pw, py_ + ph - 1))
+    # «паутинка» трещин (alligator cracking)
+    for _ in range(2):
+        x, y = float(rnd.randrange(size)), float(rnd.randrange(size))
         ang = rnd.uniform(0, math.tau)
-        for _ in range(7):
-            ang += rnd.uniform(-0.8, 0.8)
-            x += math.cos(ang) * rnd.randint(3, 8)
-            y += math.sin(ang) * rnd.randint(3, 8)
+        pts = [(int(x), int(y))]
+        for _ in range(9):
+            ang += rnd.uniform(-1.0, 1.0)
+            x = max(0, min(size - 1, x + math.cos(ang) * rnd.uniform(3, 7)))
+            y = max(0, min(size - 1, y + math.sin(ang) * rnd.uniform(3, 7)))
             pts.append((int(x), int(y)))
-        pygame.draw.lines(s, (38, 39, 43), False, pts, 1)
-        if rnd.random() < 0.6:      # ответвление
-            k = rnd.randrange(len(pts) - 1)
+        pygame.draw.lines(s, (34, 35, 39), False, pts, 1)
+        if len(pts) > 3 and rnd.random() < 0.7:
+            k = rnd.randrange(1, len(pts) - 1)
             bx, by = pts[k]
-            pygame.draw.line(s, (40, 41, 45), (bx, by),
-                             (bx + rnd.randint(-8, 8), by + rnd.randint(-8, 8)), 1)
+            pygame.draw.line(s, (36, 37, 41), (bx, by),
+                             (max(0, min(size - 1, bx + rnd.randint(-9, 9))),
+                              max(0, min(size - 1, by + rnd.randint(-9, 9)))), 1)
+    # редкие лужицы с бензиновым переливом
+    if rnd.random() < 0.35:
+        cx, cy = rnd.randrange(8, size - 8), rnd.randrange(8, size - 8)
+        w, h = rnd.randint(7, 13), rnd.randint(5, 9)
+        ov = pygame.Surface((w + 2, h + 2), pygame.SRCALPHA)
+        pygame.draw.ellipse(ov, (30, 40, 52, 120), (1, 1, w, h))
+        pygame.draw.arc(ov, (120, 140, 160, 60), (1, 1, w, h), 0.3, 2.6, 1)
+        s.blit(ov, (cx - w // 2, cy - h // 2))
+    # общая виньетка зерна — связывает слои
+    g = noise_surface((size, size), (0, 0, 0), 14, seed + 7, octaves=2)
+    g.set_alpha(46)
+    s.blit(g, (0, 0))
+    return s
+
+
+def patch_tile(size=48, seed=1):
+    """Отдельная асфальтовая заплатка поверх существующего покрытия."""
+    rnd = _rng(seed)
+    s = pygame.Surface((size, size), pygame.SRCALPHA)
+    m = rnd.randint(3, 7)
+    pw, ph = size - 2 * m, size - 2 * m - rnd.randint(0, 8)
+    body = noise_surface((pw, ph), (41, 42, 45), 12, seed, octaves=2)
+    s.blit(body, (m, m))
+    pygame.draw.rect(s, (30, 31, 34, 200), (m, m, pw, ph), 1)
+    pygame.draw.line(s, (64, 66, 70, 180), (m, m), (m + pw - 1, m))
     return s
 
 

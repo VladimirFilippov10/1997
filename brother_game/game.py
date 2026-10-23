@@ -39,6 +39,14 @@ class Game:
         self.time_s = 0.0
         self.messages = []
         self.show_map = False
+        # ---- цикл суток: утро/день/вечер/ночь. 1 игровые сутки = DAY_LEN сек.
+        self.DAY_LEN = 240.0
+        self.time_of_day = 17.6          # сумерки — сразу видны фары и фонари
+        self._night_cache = -1.0
+        # погода: ясно / морось / дождь; переключается сама + T вручную
+        self.weather_mode = "drizzle"
+        self._weather_t = 0.0
+        self._next_change = random.uniform(50, 90)
         self.muted = False
         self.rnd = random.Random(11)
 
