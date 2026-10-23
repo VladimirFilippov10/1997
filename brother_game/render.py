@@ -184,7 +184,8 @@ class Renderer:
     def _get_prop_img(self, p):
         t = p["t"]
         if t == "car":
-            return self._get_car(p.get("kind", "sedan"), p.get("color", (90, 96, 110)),
+            return self._get_car(p.get("model", p.get("kind", "vaz2101")),
+                                 p.get("color", (90, 96, 110)),
                                  p.get("seed", 1), parked=True)[0]
         key = (t, p.get("angle", 0), p.get("color"), p.get("seed", 0), p.get("size"))
         img = self._prop_cache.get(key)
@@ -224,13 +225,22 @@ class Renderer:
         key = (kind, color, seed, parked)
         hit = self._car_cache.get(key)
         if hit is None:
-            frames = T.make_car_frames(kind, color, seed)
+            import cars as C
+            legacy = {"sedan": "vaz2101", "van": "vaz2109",
+                      "bus": "bmwe34", "truck": "vaz2101"}
+            m = C.CAR_MODELS.get(kind) and kind or legacy.get(kind, "vaz2101")
+            try:
+                frames = C.make_model_frames(m, color, seed)
+                hl = C.car_headlights(m, color)
+            except Exception:
+                frames = T.make_car_frames(legacy.get(kind, "sedan"), color, seed)
+                hl = T.car_headlights(color, legacy.get(kind, "sedan"))
             still = frames[(0, False, 0, 0)]
             mv = {}
             for phase in range(4):
                 for blink in (0, 1):
                     mv[(phase, blink)] = frames[(0, True, phase, blink)]
-            hit = (still, mv, T.car_headlights(color, kind))
+            hit = (still, mv, hl)
             self._car_cache[key] = hit
         return hit
 
@@ -345,7 +355,7 @@ class Renderer:
                     pass   # припаркованные без света
             elif kind == "mover":
                 m = obj
-                still, mv, hl = self._get_car(m.get("kind", "sedan"),
+                still, mv, hl = self._get_car(m.get("model", m.get("kind", "sedan")),
                                               m.get("color", (90, 96, 110)),
                                               m.get("seed", 1))
                 phase = int(m.get("wheel", 0)) % 4
