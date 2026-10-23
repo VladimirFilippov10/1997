@@ -43,18 +43,21 @@ def noise_surface(size, base, amp, seed, octaves=3):
         arr = np.full((w, h, 3), base, dtype=np.float32)
         for o in range(octaves):
             scale = 1 << (o + 1)          # 2,4,8...
-            gw, gh = max(2, w // scale), max(2, h // scale)
-            block = np.random.RandomState(seed + o * 977).rand(gh, gw, 3)
+            gw, gh = max(2, -(-w // scale)), max(2, -(-h // scale))  # ceil
+            block = np.random.RandomState(seed + o * 977).rand(gw, gh, 3)
             block = (block - 0.5) * (amp / (o + 1))
             zoomed = np.repeat(np.repeat(block, scale, axis=0), scale, axis=1)
             zoomed = zoomed[:w, :h]
-            arr += zoomed
+            arr[:, :, :] += zoomed
         arr = np.clip(arr, 0, 255).astype(np.uint8)
         s = pygame.Surface((w, h))
-        if hasattr(surfarray, "blit"):
+        try:
             surfarray.blit(s, arr)
-        else:  # pygame-ce: массив должен быть в формате (h, w, 3)
-            surfarray.pixels3d(s)[:, :, :] = np.transpose(arr, (1, 0, 2))
+        except Exception:
+            try:  # pygame-ce: массив в формате (h, w, 3)
+                surfarray.pixels3d(s)[:, :, :] = np.transpose(arr, (1, 0, 2))
+            except Exception:
+                pass
         return s
     # запасной вариант без numpy
     s = pygame.Surface((w, h))
@@ -873,6 +876,239 @@ def lamp_glow(radius=90):
         r = int(radius * i / 12)
         a = int(7 * (12 - i) ** 1.2)
         pygame.draw.circle(s, (255, 224, 150, a), (radius, radius), r)
+    return s
+
+
+# ------------------------------------------------- объекты квартала (Ломоносова)
+def stall(seed=1, variant="metal"):
+    """Металлический ларёк 1997: профлист, вывеска-доска, прилавок.
+    variant: 'metal' — серый/зелёный профлист, 'kiosk90' — цветной «Союзпечать»."""
+    rnd = _rng(seed)
+    w, h = 46, 32
+    s = pygame.Surface((w + 8, h + 14), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (4, 8, w, h))
+    if variant == "kiosk90":
+        col = rnd.choice([(150, 60, 50), (70, 100, 140), (110, 100, 60)])
+    else:
+        col = rnd.choice([(96, 104, 100), (88, 96, 84), (110, 112, 116)])
+    pygame.draw.rect(s, col, (4, 4, w, h), border_radius=2)
+    # вертикальные листы профлиста
+    for i in range(4, 4 + w, 5):
+        pygame.draw.line(s, _shade(col, 0.82), (i, 4), (i, 4 + h), 1)
+    grain = noise_surface((w, h), (0, 0, 0), 30, seed + 5)
+    grain.set_alpha(45)
+    s.blit(grain, (4, 4))
+    # скат крыши
+    pygame.draw.polygon(s, _shade(col, 1.25), [(2, 4), (w + 6, 4), (w + 4, 0), (4, 0)])
+    # прилавок-окно с товаром
+    pygame.draw.rect(s, (28, 32, 38), (8, 10, w - 16, 12))
+    for bx in range(10, w - 10, 6):
+        pygame.draw.rect(s, rnd.choice([(200, 180, 90), (170, 80, 70),
+                                        (120, 150, 120), (190, 190, 200)]),
+                         (bx, 12, 3, 8))
+    # козырёк прилавка
+    aw = pygame.Surface((w - 10, 6), pygame.SRCALPHA)
+    for i in range(0, w - 10, 7):
+        c = (214, 206, 196) if (i // 7) % 2 == 0 else _shade(col, 1.3)
+        pygame.draw.rect(aw, c, (i, 0, min(7, w - 10 - i), 5))
+    s.blit(aw, (7, 8))
+    # пустая доска под вывеску — рендерер допишет текст
+    pygame.draw.rect(s, _shade(col, 0.65), (8, 24, w - 16, 7), border_radius=2)
+    return s
+
+
+def phonebox(seed=1):
+    """Синий телефон-автомат «Си Trans» с жёлтой будкой внутри."""
+    rnd = _rng(seed)
+    w, h = 20, 34
+    s = pygame.Surface((w + 6, h + 10), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (3, 6, w, h))
+    blue = (58, 84, 128)
+    pygame.draw.rect(s, blue, (3, 2, w, h), border_radius=3)
+    pygame.draw.rect(s, _shade(blue, 0.7), (3, 2, w, h), 2, border_radius=3)
+    # стеклянная будка
+    glass = (180, 200, 214)
+    pygame.draw.rect(s, glass, (6, 6, w - 6, 18))
+    pygame.draw.rect(s, _shade(blue, 0.8), (6, 6, w - 6, 18), 1)
+    pygame.draw.line(s, _shade(blue, 0.8), (6 + (w - 6) // 2, 6),
+                     (6 + (w - 6) // 2, 24), 1)
+    # аппарат внутри
+    pygame.draw.rect(s, (40, 42, 48), (9, 12, 6, 8))
+    # синий «купол» сверху и щель для монет
+    pygame.draw.rect(s, _shade(blue, 1.2), (3, 0, w, 3), border_radius=2)
+    return s
+
+
+def arcade(seed=1):
+    """Игровой автомат «Морской бой» / «Перископ»: деревянный корпус, экран."""
+    rnd = _rng(seed)
+    w, h = 22, 30
+    s = pygame.Surface((w + 6, h + 10), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (3, 6, w, h))
+    body = rnd.choice([(122, 84, 52), (96, 66, 48), (70, 84, 100)])
+    pygame.draw.rect(s, body, (3, 2, w, h), border_radius=2)
+    pygame.draw.rect(s, _shade(body, 0.7), (3, 2, w, h), 1, border_radius=2)
+    # светящийся экран-иллюминатор
+    pygame.draw.circle(s, (36, 60, 72), (3 + w // 2, 10), 6)
+    pygame.draw.circle(s, (90, 150, 160), (3 + w // 2, 10), 5)
+    pygame.draw.circle(s, (150, 200, 205), (3 + w // 2 - 1, 9), 2)
+    # панель со стрельбой-ручкой
+    pygame.draw.rect(s, (200, 190, 170), (6, 18, w - 6, 5))
+    pygame.draw.circle(s, (170, 60, 50), (3 + w - 6, 20), 2)
+    return s
+
+
+def dumpster(seed=1):
+    """Зелёный металлический контейнер ТБО у арки."""
+    rnd = _rng(seed)
+    w, h = 30, 20
+    s = pygame.Surface((w + 6, h + 10), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (3, 5, w, h))
+    green = (64, 92, 66)
+    pygame.draw.rect(s, green, (3, 4, w, h - 4))
+    pygame.draw.rect(s, _shade(green, 0.75), (3, 4, w, h - 4), 1)
+    # крышка-полускат
+    pygame.draw.polygon(s, _shade(green, 1.2),
+                        [(2, 4), (w + 4, 4), (w + 1, 1), (5, 1)])
+    # ржавые потёки и мусор сверху
+    for _ in range(4):
+        x = rnd.randrange(5, w)
+        pygame.draw.line(s, (96, 74, 56), (x, 6), (x + 1, 6 + rnd.randint(3, 8)), 1)
+    if rnd.random() < 0.6:
+        pygame.draw.rect(s, (180, 170, 150), (rnd.randrange(6, w - 6), 0, 5, 3))
+    # колёса
+    pygame.draw.circle(s, (30, 32, 34), (7, h + 3), 2)
+    pygame.draw.circle(s, (30, 32, 34), (w - 2, h + 3), 2)
+    return s
+
+
+def clothesline(seed=1):
+    """Бельевая верёвка во дворе: столбики + полосчатыe простыни."""
+    rnd = _rng(seed)
+    w = 56
+    s = pygame.Surface((w, 26), pygame.SRCALPHA)
+    for x in (2, w - 6):
+        pygame.draw.rect(s, (70, 66, 60), (x, 4, 4, 20))
+    # провисающая верёвка
+    pts = [(4, 8 + int(3 * math.sin(t * math.pi)))
+           for t in [i / 8 for i in range(9)]]
+    pygame.draw.lines(s, (190, 188, 180), False, pts, 1)
+    # бельё
+    for i, (px, py) in enumerate(pts[1:-1]):
+        if rnd.random() < 0.65:
+            cw, chh = rnd.choice([(10, 12), (8, 9), (12, 7)])
+            c = rnd.choice([(200, 196, 188), (160, 170, 190),
+                            (190, 150, 140), (150, 160, 140)])
+            sheet = pygame.Surface((cw, chh), pygame.SRCALPHA)
+            for yy in range(0, chh, 3):
+                pygame.draw.line(sheet, _shade(c, 0.92), (0, yy), (cw, yy), 1)
+            s.blit(sheet, (px - cw // 2, py))
+    return s
+
+
+def bare_tree(seed=1):
+    """Оголённое осеннее дерево: ствол + сучья, вид сверху."""
+    rnd = _rng(seed)
+    size = 44
+    s = pygame.Surface((size, size), pygame.SRCALPHA)
+    cx = cy = size // 2
+    bark = (58, 50, 44)
+    pygame.draw.circle(s, (0, 0, 0, 50), (cx + 2, cy + 3), 7)   # тень кроны
+    pygame.draw.circle(s, bark, (cx, cy), 4)                    # ствол
+    for a in range(0, 360, 45):
+        ang = math.radians(a + rnd.randint(-12, 12))
+        ln = rnd.randint(9, 17)
+        ex, ey = cx + math.cos(ang) * ln, cy + math.sin(ang) * ln
+        pygame.draw.line(s, _shade(bark, 0.9), (cx, cy), (ex, ey), 2)
+        # мелкие ответвления
+        for f in (0.6, 0.9):
+            bx, by = cx + math.cos(ang) * ln * f, cy + math.sin(ang) * ln * f
+            ba = ang + math.radians(rnd.randint(-50, 50))
+            pygame.draw.line(s, _shade(bark, 1.1), (bx, by),
+                             (bx + math.cos(ba) * 5, by + math.sin(ba) * 5), 1)
+    # последняя бурая листва
+    for _ in range(3):
+        a = math.radians(rnd.randrange(360))
+        r = rnd.randint(6, 15)
+        pygame.draw.circle(s, (110, 84, 52, 200),
+                           (int(cx + math.cos(a) * r), int(cy + math.sin(a) * r)), 2)
+    return s
+
+
+def storefront_awning(seed=1):
+    """Козырёк витрины над тротуаром: полосатый навес с волнистым краем."""
+    rnd = _rng(seed)
+    w, h = TILE, 18
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    base = rnd.choice([(150, 70, 58), (70, 96, 130), (120, 110, 70), (90, 104, 88)])
+    stripe = (210, 202, 192)
+    for i in range(0, w, 8):
+        c = stripe if (i // 8) % 2 == 0 else base
+        pygame.draw.rect(s, c, (i, 0, min(8, w - i), h - 4))
+    # волнистый нижний край
+    for i in range(0, w, 8):
+        pygame.draw.circle(s, stripe if (i // 8) % 2 == 0 else base,
+                           (min(i + 4, w - 1), h - 4), 4)
+    shade = pygame.Surface((w, h), pygame.SRCALPHA)
+    shade.fill((0, 0, 0, 40))
+    pygame.draw.rect(shade, (0, 0, 0, 0), (0, 0, w, 6))
+    s.blit(shade, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+    return s
+
+
+def trench_tile(seed=1):
+    """Открытый котлован: тёмная яма с оплывшими стенками и досками-креплением."""
+    rnd = _rng(seed)
+    s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+    dirt = (84, 68, 52)
+    s.fill(dirt)
+    hole = (30, 26, 24)
+    m = 5
+    pygame.draw.rect(s, hole, (m, m, TILE - 2 * m, TILE - 2 * m))
+    # стенки с градиентом
+    for i, c in enumerate(((60, 50, 40), (46, 38, 32))):
+        pygame.draw.rect(s, c, (m + i, m + i, TILE - 2 * (m + i), TILE - 2 * (m + i)), 2)
+    # доски крепленя
+    wood = (128, 100, 66)
+    pygame.draw.line(s, wood, (m, m + 3), (TILE - m, m + 3), 3)
+    pygame.draw.line(s, wood, (m, TILE - m - 3), (TILE - m, TILE - m - 3), 3)
+    # комья земли по краю
+    for _ in range(6):
+        x, y = rnd.randrange(TILE), rnd.randrange(TILE)
+        if x < m + 2 or x > TILE - m - 2 or y < m + 2 or y > TILE - m - 2:
+            pygame.draw.circle(s, _shade(dirt, rnd.uniform(0.8, 1.2)), (x, y), rnd.randint(1, 3))
+    return s
+
+
+def grate_tile(seed=1):
+    """Чугунная решётка подвального окна/приямка у фасада."""
+    rnd = _rng(seed)
+    s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+    frame = (34, 34, 36)
+    x0, y0 = 6, 10
+    w, h = TILE - 12, TILE - 20
+    pygame.draw.rect(s, (16, 16, 18), (x0 + 2, y0 + 2, w, h))       # проём
+    pygame.draw.rect(s, frame, (x0, y0, w, h), 3)
+    for i in range(x0 + 4, x0 + w - 3, 5):                            # прутья
+        pygame.draw.line(s, frame, (i, y0 + 2), (i, y0 + h - 2), 2)
+    if rnd.random() < 0.5:                                            # облупившаяся чёрная краска — ржавчина
+        rx, ry = rnd.randrange(x0 + 3, x0 + w - 4), rnd.randrange(y0 + 3, y0 + h - 4)
+        pygame.draw.circle(s, (112, 74, 50), (rx, ry), 2)
+    return s
+
+
+def steps_tile(seed=1):
+    """Гранитные ступени парадной: три стертые полосы камня."""
+    rnd = _rng(seed)
+    s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+    g = (128, 126, 122)
+    for i in range(3):
+        y = 6 + i * 7
+        c = _shade(g, 1.0 + 0.08 * i)
+        pygame.draw.rect(s, c, (4, y, TILE - 8, 6))
+        pygame.draw.line(s, _shade(g, 0.7), (4, y + 6), (TILE - 4, y + 6), 1)
+        # блеск истёртого гранита
+        pygame.draw.line(s, _shade(g, 1.25), (6, y + 1), (TILE - 6, y + 1), 1)
     return s
 
 

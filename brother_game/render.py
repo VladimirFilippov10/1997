@@ -70,6 +70,9 @@ class Renderer:
             "puddle": T.puddle(size, 11),
             "crosswalk": T.crosswalk(size),
             "track": self._track_tile(size),
+            "trench": T.trench_tile(3),
+            "grate": T.grate_tile(5),
+            "steps": T.steps_tile(7),
         }
         self.stains = []
         for s in range(6):
@@ -207,6 +210,18 @@ class Renderer:
             img = T.kiosk(p.get("seed", 1))
         elif t == "garage":
             img = T.garage(p.get("seed", 1))
+        elif t == "stall":
+            img = T.stall(p.get("seed", 1), p.get("model") or "metal")
+        elif t == "phonebox":
+            img = T.phonebox(p.get("seed", 1))
+        elif t == "arcade":
+            img = T.arcade(p.get("seed", 1))
+        elif t == "bin":
+            img = T.dumpster(p.get("seed", 1))
+        elif t == "clothesline":
+            img = T.clothesline(p.get("seed", 1))
+        elif t == "bare_tree":
+            img = T.bare_tree(p.get("seed", 1))
         else:
             img = pygame.Surface((10, 10), pygame.SRCALPHA)
         self._prop_cache[key] = img
@@ -520,7 +535,28 @@ def get_font(size, bold=False):
         try:
             f = pygame.font.SysFont("dejavusans,liberation,freesans,arial", size, bold=bold)
         except Exception:
-            f = pygame.font.Font(None, size)
+            try:
+                f = pygame.font.Font(None, size)
+            except Exception:
+                # в среде без шрифтов (например, CI/headless-контейнер) —
+                # заглушка, рисующая пустые изображения заданного размера
+                class _NoFont:
+                    def render(self, text, aa=False, color=(0, 0, 0)):
+                        h = max(8, int(size * 1.2))
+                        s = pygame.Surface((max(1, 7 * len(str(text))), h),
+                                           pygame.SRCALPHA)
+                        return s
+
+                    def size(self, text):
+                        return (max(1, 7 * len(str(text))), max(8, int(size * 1.2)))
+
+                    def get_height(self):
+                        return max(8, int(size * 1.2))
+
+                    def get_ascent(self):
+                        return max(6, int(size * 0.9))
+
+                f = _NoFont()
         _FONT_CACHE[key] = f
     return f
 
