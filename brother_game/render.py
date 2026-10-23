@@ -85,6 +85,7 @@ class Renderer:
             "steps": lambda: T.steps_tile(7),
             "patch": lambda: T.patch_tile(size, 41),
             "porch": lambda: T.steps_tile(9),
+            "doorface": lambda: T.door_sheet_img(),
         }
         self.flat_tiles = {}
         for name, fn in builders.items():
@@ -178,7 +179,8 @@ class Renderer:
                     self._vis.add((tx, ty))
             block = T.building_block(rect.width, rect.height, w["color"],
                                      w.get("floors", 5), w.get("style", "gable"),
-                                     w.get("seed", 1), w.get("tower", False))
+                                     w.get("seed", 1), w.get("tower", False),
+                                     shop=w.get("shop"))
             surf.blit(block, rect.topleft)
             # тень дома на юг — мягкая полоса
             sh = pygame.Surface((rect.width + 8, 10), pygame.SRCALPHA)
@@ -199,6 +201,11 @@ class Renderer:
                     self.lit_windows.append((wx0, rect.bottom + 9, rnd.random()))
                 wx0 += step
         self.map_surface = surf
+        # интерьеры домов — печатаются один раз в отдельные буферы
+        try:
+            self.indoors = d.build_indoors()
+        except Exception:
+            self.indoors = {}
         return surf
 
     # --------------------------------------------------------- динамические
@@ -324,16 +331,41 @@ class Renderer:
     def draw(self, camera, player, time_s, inventory_sel, messages):
         d = self.d
         camx, camy = camera
-        camx = int(max(0, min(self.world_px_w - WINDOW_W, camx)))
-        camy = int(max(0, min(self.world_px_h - WINDOW_H, camy)))
         view = pygame.Rect(camx, camy, WINDOW_W, WINDOW_H)
         self._blit_n = 0
 
-        self.screen.blit(self.map_surface, (0, 0), view)
-        self._blit_n += 1
+        lvl = d.active_grid()
+        self._lvl = lvl
+        if lvl is not None:
+            # ---- внутри здания: свой буфер пола/стен, камера по интерьеру
+            iw, ih = lvl["w"] * TILE, lvl["h"] * TILE
+            camx = int(max(0, min(max(0, iw - WINDOW_W), camx)))
+            camy = int(max(0, min(max(0, ih - WINDOW_H), camy)))
+            view = pygame.Rect(camx, camy, WINDOW_W, WINDOW_H)
+            bg = getattr(self, "indoors", {}).get(lvl["key"])
+            if bg is not None:
+                # blit с source-rect: берём только видимую часть буфера
+                sx1 = min(iw - camx, WINDOW_W)
+                sy1 = min(ih - camy, WINDOW_H)
+                src = pygame.Rect(camx, camy, max(0, sx1), max(0, sy1))
+                self.screen.blit(bg, (0, 0), src)
+                if sx1 < WINDOW_W or sy1 < WINDOW_H:
+                    dark = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+                    dark.fill((10, 10, 14, 220))
+                    self.screen.blit(dark, (max(0, sx1), 0),
+                                     (0, 0, WINDOW_W - max(0, sx1), WINDOW_H))
+            else:
+                self.screen.fill((36, 34, 32))
+            self._draw_interior_extras(lvl, camx, camy, time_s)
+        else:
+            camx = int(max(0, min(self.world_px_w - WINDOW_W, camx)))
+            camy = int(max(0, min(self.world_px_h - WINDOW_H, camy)))
+            view = pygame.Rect(camx, camy, WINDOW_W, WINDOW_H)
+            self.screen.blit(self.map_surface, (0, 0), view)
+            self._blit_n += 1
 
         # ---- блики воды (анимация)
-        if self._water_y is not None:
+        if self._water_y is not None and lvl is None:
             wy0 = int(self._water_y * TILE - camy)
             if -TILE < wy0 < WINDOW_H:
                 band = pygame.Rect(0, max(0, wy0), WINDOW_W,
@@ -351,7 +383,7 @@ class Renderer:
                     self._blit_n += 1
 
         # ---- предметы на земле (поверх карты)
-        lvl_now = d.active_grid()
+        lvl_now = lvl
         item_list = lvl_now["items"] if lvl_now else d.items
         for it in item_list:
             if it["taken"]:
@@ -369,7 +401,7 @@ class Renderer:
             self._blit_n += 2
 
         # ---- ночные окна подъездов (пока не темно — не видны)
-        if self.night > 0.05:
+        if self.night > 0.05 and lvl is None:
             for wx, wy, k in self.lit_windows:
                 sx, sy = wx - camx, wy - camy
                 if -10 < sx < WINDOW_W + 10 and -10 < sy < WINDOW_H + 10:
@@ -388,15 +420,18 @@ class Renderer:
         for m in d.movers:
             if view.inflate(160, 160).collidepoint(m["x"], m["y"]):
                 draw_list.append((m["y"], "mover", m))
-        lvl = d.active_grid()
         npcs = lvl["npcs"] if lvl else d.npcs
-        items = lvl["items"] if lvl else d.items
         props_in = lvl["props"] if lvl else None
         if props_in is not None:
             for p in props_in:
                 if view.inflate(140, 140).collidepoint(p["x"], p["y"]):
                     draw_list.append((p["y"], "prop", p))
         for n in npcs:
+            if lvl is not None:
+                # координаты уличных прохожих вне плана этажа — не рисуем
+                if not (0 < n["x"] < lvl["w"] * TILE and
+                        0 < n["y"] < lvl["h"] * TILE):
+                    continue
             if view.inflate(140, 140).collidepoint(n["x"], n["y"]):
                 draw_list.append((n["y"], "npc", n))
         draw_list.append((player.y, "player", player))
@@ -480,7 +515,7 @@ class Renderer:
                         self.weather.steam.emit(obj.x, obj.y - 6, n=1)
 
         # ---- верхний слой: листва, трубы теплотрассы (+ пар из вентилей)
-        for o in d.over:
+        for o in ([] if lvl else d.over):
             if o["t"] == "tree" and view.inflate(180, 180).collidepoint(o["x"], o["y"]):
                 img = self._get_tree(o)
                 sx, sy = o["x"] - camx, o["y"] - camy
@@ -577,9 +612,32 @@ class Renderer:
                 lights.append((sx + 8, sy + 8, 0.5 * k))
                 self._blit_n += 1
 
+        # ---- указатели дверей: снаружи — «войти», внутри — «выйти»
+        if lvl is None:
+            for dr in d.doors:
+                if view.inflate(120, 120).collidepoint(dr["x"], dr["y"]):
+                    sx, sy = dr["x"] - camx, dr["y"] - camy - 26
+                    pulse = 0.6 + 0.4 * math.sin(time_s * 4.0)
+                    fr = pygame.Rect(sx - 16, sy - 12, 32, 24)
+                    pygame.draw.rect(self.screen, (20, 18, 16, 200), fr)
+                    pygame.draw.rect(self.screen,
+                                     (int(220 * pulse + 30), int(190 * pulse + 20), 90),
+                                     fr, 1)
+                    dm = T.door_sheet_img(14, 20, seed=int(dr["x"]))
+                    self.screen.blit(dm, dm.get_rect(center=(sx, sy)))
+        else:
+            ex, ey = lvl["exit"]
+            sx, sy = ex - camx, ey - camy - 30
+            pulse = 0.6 + 0.4 * math.sin(time_s * 4.0)
+            fr = pygame.Rect(sx - 20, sy - 11, 40, 22)
+            pygame.draw.rect(self.screen, (20, 18, 16), fr)
+            pygame.draw.rect(self.screen,
+                             (int(220 * pulse + 30), int(190 * pulse + 20), 90), fr, 1)
+            draw_text(self.screen, "ВЫХОД", (sx, sy), size=12,
+                      color=(230, 220, 180), center=True)
         # ---- подписи мест
         font = get_font(20)
-        for z in d.zones:
+        for z in ([] if lvl else d.zones):
             sx, sy = z["x"] - camx, z["y"] - camy
             if -200 < sx < WINDOW_W + 200 and -100 < sy < WINDOW_H + 100:
                 txt = font.render(z["label"], True, (180, 180, 178))
@@ -590,9 +648,24 @@ class Renderer:
                 self.screen.blit(txt, rect)
                 self._blit_n += 2
 
-        # ---- ночь: темнота с «дырами» света
-        if self.night > 0.02:
+        # ---- ночь: темнота с «дырами» света (в домах — свои лампы)
+        if lvl is not None:
+            for pr in lvl.get("lamps", []):
+                lights.append((pr["x"] - camx, pr["y"] - camy - 6, 0.8))
+        if self.night > 0.02 and lvl is None:
             self._draw_night(lights)
+        elif lvl is not None:
+            # в интерьере всегда сумерки: лёгкий синий флэт + ореоны ламп
+            dim = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+            dim.fill((10, 12, 20, 70))
+            self.screen.blit(dim, (0, 0))
+            glow = self._lamp_glow()
+            for (lx, ly, inten) in lights:
+                size = max(24, int(150 * inten))
+                img = pygame.transform.scale(glow, (size, size))
+                tmp = img.copy()
+                tmp.set_alpha(60)
+                self.screen.blit(tmp, tmp.get_rect(center=(int(lx), int(ly))))
         # ---- подкраска кадра по фазе суток (рассвет/закат/ночь)
         self._sky_tint_overlay()
 
@@ -615,6 +688,35 @@ class Renderer:
         self._vignette(camx, camy, player)
         if self.weather:
             self.weather.draw_overlay(self.screen, camx, camy)
+
+    def _draw_interior_extras(self, lvl, camx, camy, time_s):
+        """Детали интерьера: плафоны, вывески магазинов, тёплый свет."""
+        # потолочные плафоны (рисуются поверх мебели, как настенные огни)
+        for pr in lvl.get("lamps", []):
+            sx, sy = pr["x"] - camx, pr["y"] - camy
+            if -40 < sx < WINDOW_W + 40 and -40 < sy < WINDOW_H + 40:
+                halo = pygame.Surface((30, 30), pygame.SRCALPHA)
+                k = 0.85 + 0.15 * math.sin(time_s * 2.3 + pr["x"])
+                pygame.draw.circle(halo, (255, 226, 160, int(70 * k)), (15, 15), 12)
+                pygame.draw.circle(halo, (255, 244, 210, 230), (15, 15), 4)
+                self.screen.blit(halo, (sx - 15, sy - 15))
+        # вывеска магазина внутри уровня
+        shop = lvl.get("shop")
+        if shop:
+            cx = lvl["w"] * TILE // 2 - camx
+            cy = 14 - camy
+            sf = get_font(14, bold=True)
+            txt = sf.render(shop, True, (236, 224, 190))
+            rect = txt.get_rect(center=(cx, cy))
+            bg = pygame.Surface((rect.width + 12, rect.height + 4), pygame.SRCALPHA)
+            bg.fill((26, 22, 20, 210))
+            self.screen.blit(bg, (rect.left - 6, rect.top - 2))
+            self.screen.blit(txt, rect)
+        # название подъезда/квартиры мелкой строкой внизу
+        lab = lvl.get("label")
+        if lab:
+            draw_text(self.screen, lab, (12, WINDOW_H - 64), size=14,
+                      color=(170, 166, 158), bg=(16, 18, 22, 150))
 
     def _draw_night(self, lights):
         """Ночь: маска темноты с «дырами» от фонарей, фар и вывесок."""

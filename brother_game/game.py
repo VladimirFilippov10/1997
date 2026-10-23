@@ -61,6 +61,8 @@ class Game:
             self.district = build_district(seed=7)
         self.player = Player(self.district.spawn[0], self.district.spawn[1], self.district)
         self.walkers = [WalkerNPC(n) for n in self.district.npcs]
+        self._interior_walkers = []   # NPC внутри текущего уровня
+        self._return_pos = None       # куда вернуться при выходе
         self.inventory = Inventory()
         self.camera = [self.player.x - WINDOW_W / 2, self.player.y - WINDOW_H / 2]
 
@@ -126,7 +128,9 @@ class Game:
 
     def nearest_item(self):
         best, bd = None, TILE * 1.2
-        for it in self.district.items:
+        lvl = self.district.active_grid()
+        pool = lvl["items"] if lvl else self.district.items
+        for it in pool:
             if it["taken"]:
                 continue
             d = math.hypot(it["x"] - self.player.x, it["y"] - self.player.y)
@@ -134,8 +138,84 @@ class Game:
                 bd, best = d, it
         return best
 
+    # -------------------------------------------------- вход/выход из зданий
+    def near_door(self):
+        """Ближайшая внешняя дверь в радиусе действия (или None)."""
+        if self.district.in_level:
+            return None
+        best, bd = None, TILE * 1.1
+        for dr in self.district.doors:
+            d = math.hypot(dr["x"] - self.player.x, dr["y"] - self.player.y)
+            if d < dr["r"] + 8 and d < bd:
+                bd, best = d, dr
+        return best
+
+    def enter_door(self, dr):
+        lvl = self.district.interiors.get(dr["level"])
+        if lvl is None:
+            return
+        self._return_pos = (self.player.x, self.player.y)
+        self.district.enter_level(lvl["key"])
+        # посадить Данилу у входа в интерьер (у южной стены — у двери)
+        sx, sy = lvl["spawn"][0], lvl["h"] * TILE - TILE * 1.25
+        self.player.x, self.player.y = sx, sy
+        self.camera = [self.player.x - WINDOW_W / 2, self.player.y - WINDOW_H / 2]
+        self._interior_walkers = [WalkerNPC(n) for n in lvl["npcs"]]
+        self.say(lvl["label"], color=(240, 210, 120), size=22, bold=True, life=2.5)
+        if self.audio.ok:
+            self.audio.play(self.click, volume=0.7)
+
+    def exit_door(self):
+        lvl = self.district.active_grid()
+        if lvl is None:
+            return
+        self.district.enter_level(None)
+        self._interior_walkers = []
+        rx, ry = self._return_pos or self.district.spawn
+        # ставим ровно на клетку двери снаружи, чуть отступив от фасада
+        dr = None
+        for cand in self.district.doors:
+            if cand["level"] == lvl["key"]:
+                dr = cand
+                break
+        if dr is not None:
+            side = dr.get("side", "south")
+            off = TILE * 0.9
+            rx, ry = dr["x"], dr["y"]
+            if side == "south":
+                ry += off
+            elif side == "north":
+                ry -= off
+            elif side == "west":
+                rx -= off
+            else:
+                rx += off
+        from player import find_walkable
+        rx, ry = find_walkable(self.district, rx, ry, r=self.player.radius)
+        self.player.x, self.player.y = rx, ry
+        self.camera = [rx - WINDOW_W / 2, ry - WINDOW_H / 2]
+        if self.audio.ok:
+            self.audio.play(self.click, volume=0.7)
+
+    def toggle_door(self):
+        """E у двери: войти; E у выхода внутри: выйти (если рядом нет предмета)."""
+        if self.district.in_level:
+            lvl = self.district.active_grid()
+            ex, ey = lvl["exit"]
+            if math.hypot(ex - self.player.x, ey - self.player.y) < TILE * 1.2:
+                self.exit_door()
+                return True
+            return False
+        dr = self.near_door()
+        if dr is not None:
+            self.enter_door(dr)
+            return True
+        return False
+
     # --------------------------------------------------------------- действия
     def pick_up(self):
+        if self.toggle_door():
+            return
         it = self.nearest_item()
         if it is None:
             return
@@ -295,6 +375,8 @@ class Game:
         self.player.update(dx, dy, run, dt, on_step=self.on_step)
         for w in self.walkers:
             w.update(dt)
+        for w in self._interior_walkers:
+            w.update(dt)
         # ---- транспорт: едущие машины (район сам считает траектории)
         events = []
         try:
@@ -314,6 +396,10 @@ class Game:
         # мягкая камера
         tx = self.player.x - WINDOW_W / 2
         ty = self.player.y - WINDOW_H / 2
+        if self.district.in_level:
+            lvl = self.district.active_grid()
+            tx = max(0.0, min(tx, max(0.0, lvl["w"] * TILE - WINDOW_W)))
+            ty = max(0.0, min(ty, max(0.0, lvl["h"] * TILE - WINDOW_H)))
         k = 1.0 - math.exp(-dt * 7.0)
         self.camera[0] += (tx - self.camera[0]) * k
         self.camera[1] += (ty - self.camera[1]) * k
