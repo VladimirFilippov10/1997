@@ -20,6 +20,9 @@ import random
 import pygame
 from pygame import surfarray
 
+# размер тайла карты (используется в тайловых текстурах: траншеи, решётки, ступени)
+TILE = 48
+
 try:
     import numpy as np
 except Exception:  # pragma: no cover - numpy обязателен для pygame-ce
@@ -880,6 +883,29 @@ def lamp_glow(radius=90):
 
 
 # ------------------------------------------------- объекты квартала (Ломоносова)
+def awning(count=8, seed=1):
+    """Тканевый козырёк витрины: полосатая маркиза над тротуаром (слой over)."""
+    rnd = _rng(seed)
+    w = max(24, count * TILE // 2)
+    h = 20
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    base = rnd.choice([(150, 62, 52), (72, 96, 130), (120, 108, 60), (90, 110, 88)])
+    stripe = _shade(base, 1.45)
+    seg = 12
+    for i in range(0, w, seg):
+        c = base if (i // seg) % 2 == 0 else stripe
+        pygame.draw.polygon(s, c, [(i, 0), (min(i + seg, w), 0),
+                                   (min(i + seg, w), h - 6), (i, h - 6)])
+    # волнистая бахрома
+    for i in range(0, w, 8):
+        c = base if (i // 8) % 2 == 0 else stripe
+        pygame.draw.arc(s, c, (i, h - 10, 8, 10), math.pi, 2 * math.pi, 3)
+    # тень от козырька и блик у стены
+    pygame.draw.line(s, (0, 0, 0, 70), (0, h - 2), (w, h - 2), 3)
+    pygame.draw.line(s, _shade(base, 1.6), (0, 1), (w, 1), 2)
+    return s
+
+
 def stall(seed=1, variant="metal"):
     """Металлический ларёк 1997: профлист, вывеска-доска, прилавок.
     variant: 'metal' — серый/зелёный профлист, 'kiosk90' — цветной «Союзпечать»."""
