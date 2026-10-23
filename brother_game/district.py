@@ -53,6 +53,9 @@ class District:
         self.props = []     # {t,x,y,...}             (в пикселях)
         self.items = []     # {name,x,y,label,taken}
         self.npcs = []      # {x,y,r,jacket,mode,path,speed}
+        self.movers = []    # ездящие машины: {t,x,y,dir,speed,ax,bx,...}
+        self.puddles = []   # world-координаты луж (рябь дождя)
+        self.vents = []     # точки теплотрассы, из которых валит пар
         self.zones = []     # подписи мест {label,x,y}
         self.blocked = set()  # (tx,ty) — непроходимые клетки
         self.water_y = None
@@ -72,12 +75,19 @@ class District:
         return (tx, ty) in self.blocked
 
     def add_wall_block(self, x, y, w, h, color=None, floors=5):
+        rnd = self.rnd
+        style = rnd.choice(("gable", "gable", "mansard", "hip", "flat", "monitor"))
+        tower = (w >= 3 and h >= 2 and rnd.random() < 0.18)
         self.walls.append({"x": x, "y": y, "w": w, "h": h,
-                           "color": color or (92, 88, 84), "floors": floors})
+                           "color": color or (92, 88, 84), "floors": floors,
+                           "style": style, "tower": tower,
+                           "seed": rnd.randrange(1 << 20)})
         for ty in range(y, y + h):
             for tx in range(x, x + w):
                 if 0 <= tx < self.w and 0 <= ty < self.h:
                     self.blocked.add((tx, ty))
+        # окна подъездов во двор + козырьки (плоские детали)
+        return self.walls[-1]
 
     def add_prop(self, kind, px, py, solid=True, radius=10, **kw):
         p = {"t": kind, "x": px, "y": py, "solid": solid, "r": radius}
@@ -86,6 +96,22 @@ class District:
         if solid:
             tx, ty = int(px // TILE), int(py // TILE)
             self.blocked.add((tx, ty))
+        return p
+
+    def add_car(self, px, py, color=None, angle=0, kind=None, seed=None,
+                solid=True, parked=False):
+        """Автомобиль: 4 кузова × палитра «питерского двора»."""
+        rnd = self.rnd
+        colors = [(90, 96, 110), (120, 60, 52), (70, 84, 70), (110, 108, 96),
+                  (60, 62, 66), (130, 110, 70), (86, 70, 100), (140, 132, 110),
+                  (58, 74, 96), (150, 148, 140)]
+        kinds = ("sedan", "sedan", "sedan", "van", "bus", "truck")
+        c = color or rnd.choice(colors)
+        k = kind or rnd.choice(kinds)
+        p = self.add_prop("car", px, py, solid=solid, radius=13,
+                          color=c, angle=angle, kind=k,
+                          seed=seed if seed is not None else rnd.randrange(999),
+                          parked=parked)
         return p
 
     # ------------------------------------------------------- генерация карты
@@ -178,23 +204,38 @@ class District:
             col = palettes[i % len(palettes)]
             self.fill_ground(bx, by, bx + bw, by + bh, G_YARD)
             thick = 1
-            # периметр — стены
-            self.add_wall_block(bx, by, bw, thick, col, rnd.randint(4, 7))
-            self.add_wall_block(bx, by + bh - thick, bw, thick, col, rnd.randint(4, 7))
-            self.add_wall_block(bx, by + thick, thick, bh - 2 * thick, col, rnd.randint(4, 7))
-            self.add_wall_block(bx + bw - thick, by + thick, thick, bh - 2 * thick, col, rnd.randint(4, 7))
-            # арка в одном из углов (проход во двор)
-            gate_side = rnd.choice(["left", "right", "top"])
-            if gate_side == "left":
-                gy = by + bh // 2
-                self.blocked.discard((bx, gy))
-                self.fill_ground(bx, gy, bx + 1, gy + 1, G_YARD)
-            elif gate_side == "right":
-                gy = by + bh // 2
-                self.blocked.discard((bx + bw - 1, gy))
-            else:
-                gx = bx + bw // 2
-                self.blocked.discard((gx, by))
+            # периметр — стены (каждый корпус получает свой стиль кровли)
+            for (wx, wy, ww, wh) in ((bx, by, bw, thick),
+                                     (bx, by + bh - thick, bw, thick),
+                                     (bx, by + thick, thick, bh - 2 * thick),
+                                     (bx + bw - thick, by + thick, thick, bh - 2 * thick)):
+                w = self.add_wall_block(wx, wy, ww, wh, col, rnd.randint(4, 7))
+                if w is None:
+                    continue
+                # продольные корпуса — двускатная жесть, поперечные — вальма/мансарда
+                if ww >= wh:
+                    w["style"] = rnd.choice(("gable", "gable", "mansard"))
+                else:
+                    w["style"] = rnd.choice(("hip", "flat", "monitor"))
+                # угловые башенки-эркеры у «парадных» длинных корпусов
+                w["tower"] = (ww >= 14 and rnd.random() < 0.5)
+            # арки-проходы во двор (плюс плоская деталь «арочный свод»)
+            for side in rnd.sample(["left", "right", "top"], 2):
+                if side == "left":
+                    gy = by + bh // 2
+                    self.blocked.discard((bx, gy))
+                    self.flat.append({"t": "arch", "x": bx, "y": gy, "rot": 0,
+                                      "seed": rnd.randrange(99)})
+                elif side == "right":
+                    gy = by + bh // 2
+                    self.blocked.discard((bx + bw - 1, gy))
+                    self.flat.append({"t": "arch", "x": bx + bw - 1, "y": gy,
+                                      "rot": 0, "seed": rnd.randrange(99)})
+                else:
+                    gx = bx + bw // 2
+                    self.blocked.discard((gx, by))
+                    self.flat.append({"t": "arch", "x": gx, "y": by, "rot": 90,
+                                      "seed": rnd.randrange(99)})
             # внутренний флигель
             if bw > 12 and bh > 6:
                 fx, fy = bx + 4, by + 3
@@ -210,7 +251,9 @@ class District:
         mx, my = 60, 18
         self.fill_ground(mx + 2, my + 2, mx + 14, my + 8, G_CONCRETE)
         for i in range(3):
-            self.add_wall_block(mx + 3 + i * 4, my + 3, 3, 2, (150, 60, 50), 1)
+            w = self.add_wall_block(mx + 3 + i * 4, my + 3, 3, 2, (150, 60, 50), 1)
+            if w is not None:
+                w["style"] = "glass"          # стеклянные навесы рядов
         self.zones.append({"label": "РЫНОК", "x": (mx + 8) * TILE, "y": (my + 1) * TILE})
         # ------------------------------------------------ гаражный кооператив
         gx, gy = 82, 48
@@ -245,20 +288,54 @@ class District:
                           solid=True, radius=8)
 
     def _props(self):
-        """Машины, фонари, лавки, урны, киоски, деревья вдоль улиц."""
-        rnd = self.rnd
+        """Машины (в т.ч. ездящие), фонари, лавки, урны, киоски, гаражи, деревья."""
+        rnd = self.rng = self.rnd
         car_colors = [(90, 96, 110), (120, 60, 52), (70, 84, 70), (110, 108, 96),
-                      (60, 62, 66), (130, 110, 70), (86, 70, 100)]
-        # машины вдоль широкой улицы rows 12/30/44 и проспекта
+                      (60, 62, 66), (130, 110, 70), (86, 70, 100), (140, 132, 110)]
+        kinds = ("sedan", "sedan", "van", "bus", "truck")
+
+        def car_row(row, tx_from, tx_to, step=4, p=0.55, moving=False):
+            for tx in range(tx_from, tx_to, step):
+                if self.ground[row + 1][tx] != G_ASPHALT or rnd.random() > p:
+                    continue
+                px = tx * TILE + TILE // 2
+                py = (row + 1) * TILE + TILE // 2
+                kw = dict(color=rnd.choice(car_colors), angle=0,
+                          kind=rnd.choice(kinds), seed=rnd.randrange(999))
+                if moving:
+                    self.movers.append({
+                        "t": "car", "x": px, "y": py, "r": 13, "solid": False,
+                        "dir": 1 if rnd.random() < 0.5 else -1,
+                        "speed": rnd.uniform(55, 120), "horn_t": rnd.uniform(2, 14),
+                        "ax": tx_from * TILE, "bx": tx_to * TILE, **kw})
+                else:
+                    self.add_car(px, py, color=kw["color"], angle=kw["angle"],
+                                 kind=kw["kind"], seed=kw["seed"], parked=True)
+
+        # припаркованные вдоль широкой улицы rows 12/30/44
         for row in (12, 30, 44):
-            for tx in range(2, self.w - 2, 4):
-                if self.ground[row + 1][tx] == G_ASPHALT and rnd.random() < 0.55:
-                    ang = 0 if rnd.random() < 0.8 else 90
-                    px = tx * TILE + TILE // 2
-                    py = (row + 1) * TILE + TILE // 2
-                    self.add_prop("car", px, py, solid=True, radius=13,
-                                  color=rnd.choice(car_colors), angle=ang,
-                                  seed=rnd.randrange(999))
+            car_row(row, 2, self.w - 2, p=0.5)
+        # «оживлённый» проспект — машины едут туда-сюда по рядам 13 и 31
+        car_row(13, 2, self.w - 2, step=9, p=0.9, moving=True)
+        car_row(31, 2, self.w - 2, step=11, p=0.85, moving=True)
+        # маршрутка по кольцу проспекта 47/48
+        self.movers.append({"t": "car", "kind": "bus", "color": (176, 158, 60),
+                            "x": 10 * TILE, "y": 47 * TILE + TILE // 2, "r": 13,
+                            "solid": False, "dir": 1, "speed": 70.0,
+                            "horn_t": 6.0, "ax": 3 * TILE, "bx": (self.w - 3) * TILE,
+                            "angle": 0, "seed": 42})
+        # троллейбус вдоль набережной
+        self.movers.append({"t": "car", "kind": "bus", "color": (120, 130, 150),
+                            "x": 60 * TILE, "y": 53 * TILE + TILE // 2, "r": 13,
+                            "solid": False, "dir": -1, "speed": 55.0,
+                            "horn_t": 9.0, "ax": 4 * TILE, "bx": (self.w - 4) * TILE,
+                            "angle": 0, "seed": 43})
+        # выезд со двора: фургон петляет по внутриквартальному проезду
+        self.movers.append({"t": "car", "kind": "van", "color": (150, 140, 120),
+                            "x": 30 * TILE, "y": 27 * TILE, "r": 13, "solid": False,
+                            "dir": 1, "speed": 42.0, "horn_t": 20.0,
+                            "ax": 26 * TILE, "bx": 44 * TILE, "ay": 27 * TILE,
+                            "by": 27 * TILE, "angle": 0, "seed": 44})
         # припаркованные у дворов
         for (bx, by, bw, bh) in [(4, 18, 18, 10), (60, 2, 18, 9), (4, 48, 18, 8)]:
             for i in range(3):
@@ -267,13 +344,24 @@ class District:
                 if not self.is_solid_tile(int(px // TILE), int(py // TILE)):
                     self.add_prop("car", px, py, solid=True, radius=13,
                                   color=rnd.choice(car_colors), angle=90,
+                                  kind=rnd.choice(("sedan", "van")),
                                   seed=rnd.randrange(999))
         # фонари на тротуарах
         for row in (10, 36, 50):
             for tx in range(3, self.w, 8):
                 self.add_prop("lamp", tx * TILE + TILE // 2, row * TILE,
                               solid=True, radius=7)
-        # лавки + урны в сквере и дворах
+        # киоски и гаражи у рынка / угла кварталов
+        for (px, py) in [(58, 20), (75, 20), (26, 14), (56, 46), (80, 32)]:
+            self.add_prop("kiosk", px * TILE, py * TILE, solid=True, radius=16,
+                          seed=rnd.randrange(99))
+        for i in range(4):
+            px = (84 + (i % 2) * 3) * TILE
+            py = (44 + (i // 2) * 2) * TILE
+            if not self.is_solid_tile(int(px // TILE), int(py // TILE)):
+                self.add_prop("garage", px, py, solid=True, radius=15,
+                              seed=rnd.randrange(99))
+        # скамейки + урны в сквере и дворах
         for i in range(8):
             px = rnd.choice([(32 + i) * TILE, (8 + i * 2) * TILE, (64 + i * 2) * TILE])
             py = rnd.choice([56 * TILE, 24 * TILE, 40 * TILE])
@@ -285,6 +373,9 @@ class District:
             py = (12 + (i % 3) * 16) * TILE
             if not self.is_solid_tile(int(px // TILE), int(py // TILE)):
                 self.add_prop("trash", px, py, solid=True, radius=7)
+        # теплотрасса: точки, из которых валит пар (vent'ы)
+        for cx in range(4, 22, 3):
+            self.vents.append((cx * TILE + TILE // 2, 26 * TILE))
         # деревья вдоль набережной и проспекта
         for i in range(0, self.w, 5):
             for py_row in (54,):
@@ -296,13 +387,16 @@ class District:
             self.over.append({"t": "tree", "x": 50 * TILE, "y": j * TILE,
                               "size": 64, "seed": 300 + j})
             self.add_prop("trunk", 50 * TILE, j * TILE, solid=True, radius=8)
-        # лужи и мусор на асфальте
+        # лужи и мусор на асфальте; координаты луж — для ряби дождя
         for _ in range(120):
             tx, ty = rnd.randrange(self.w), rnd.randrange(self.water_y or self.h)
             if self.ground[ty][tx] in (G_ASPHALT, G_BRICK, G_YARD) \
                     and (tx, ty) not in self.blocked:
-                self.flat.append({"t": rnd.choice(["puddle", "stain", "leaf"]),
-                                  "x": tx, "y": ty, "seed": rnd.randrange(999)})
+                t = rnd.choice(["puddle", "stain", "leaf"])
+                self.flat.append({"t": t, "x": tx, "y": ty, "seed": rnd.randrange(999)})
+                if t == "puddle":
+                    self.puddles.append((tx * TILE + TILE // 2,
+                                         ty * TILE + TILE // 2))
 
     def _items(self):
         """Подбираемые предметы для инвентаря (по мотивам фильма)."""
@@ -346,7 +440,7 @@ class District:
                 "x": ax, "y": ay, "a": (ax, ay), "b": (bx, by),
                 "r": 11, "jacket": jackets[i % len(jackets)],
                 "speed": rnd.uniform(42, 78), "phase": rnd.uniform(0, 1),
-                "dir": 1, "facing": 0.0,
+                "dir": 1, "facing": 0.0, "walk_t": rnd.uniform(0, 6.28),
             })
 
     # ------------------------------------------------------- доступ к данным
@@ -392,6 +486,47 @@ class District:
                 if self.is_solid_tile(int(x // TILE), int(y // TILE)):
                     return True
         return False
+
+    # -------------------------------------------------- анимация транспорта
+    def update_movers(self, dt, player_pos=None):
+        """Ездящие машины туда-сюда по участкам. Возвращает список событий
+        ('horn', x, y) — когда машина сигналит рядом с игроком."""
+        events = []
+        for m in self.movers:
+            m["wheel"] = (m.get("wheel", 0.0) + dt * m["speed"] * 0.05) % 4
+            m["dir_t"] = m.get("dir_t", 0.0) + dt
+            ax, bx = m["ax"], m["bx"]
+            ay = m.get("ay", m["y"])
+            by = m.get("by", m["y"])
+            horiz = abs(bx - ax) >= abs(by - ay)
+            if horiz:
+                m["x"] += m["dir"] * m["speed"] * dt
+                m["y"] = ay if m["dir"] > 0 else by
+                m["angle"] = 0 if m["dir"] > 0 else 180
+                if m["x"] > bx:
+                    m["x"], m["dir"] = bx, -1
+                elif m["x"] < ax:
+                    m["x"], m["dir"] = ax, 1
+            else:
+                m["y"] += m["dir"] * m["speed"] * dt
+                m["angle"] = 270 if m["dir"] > 0 else 90
+                if m["y"] > by:
+                    m["y"], m["dir"] = by, -1
+                elif m["y"] < ay:
+                    m["y"], m["dir"] = ay, 1
+            # мигалка поворотника при «развороте» на краю участка
+            near_edge = (m["x"] - ax < 60) or (bx - m["x"] < 60) if horiz \
+                else (m["y"] - ay < 60) or (by - m["y"] < 60)
+            m["blink"] = 1 if (near_edge and int(m["dir_t"] * 3) % 2 == 0) else 0
+            # гудок рядом с игроком — не чаще раза в N секунд
+            m["horn_t"] -= dt
+            if m["horn_t"] <= 0:
+                m["horn_t"] = random.uniform(9, 22)
+                if player_pos:
+                    d = math.hypot(m["x"] - player_pos[0], m["y"] - player_pos[1])
+                    if d < 320:
+                        events.append(("horn", m["x"], m["y"], max(0.15, 1 - d / 340)))
+        return events
 
 
 def build_district(seed=7):

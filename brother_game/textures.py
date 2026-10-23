@@ -4,6 +4,15 @@
 Никаких внешних картинок: всё генерируется на старте в память, поэтому
 игра одинаково запускается на Windows и macOS и не тянет ассеты.
 Используем pygame.surfarray + numpy (numpy идёт в комплекте с pygame-ce).
+
+Модели «проработанные», но читаемые сверху:
+  * здания — 6 типов крыш (скаты/эркер/мансарда/стеклянная крыша рынка,
+    дымовые трубы с тягой, чердачные окна-«слухи», парапет с бликом);
+  * автомобили — 4 кузова (седан / «папский» фургон / маршрутка / грузовик),
+    фары с конусами света, мигающие поворотники, вращающиеся колёса,
+    антенна, тень под корпусом;
+  * человек — покадровая походка (маховые руки + перекат корпуса);
+  * фонари — конус света; киоски, гаражи, стадион, вышка и т.д.
 """
 import math
 import random
@@ -15,6 +24,10 @@ try:
     import numpy as np
 except Exception:  # pragma: no cover - numpy обязателен для pygame-ce
     np = None
+
+
+def _shade(col, k):
+    return tuple(max(0, min(255, int(c * k))) for c in col[:3])
 
 
 # ------------------------------------------------------------------ утилиты
@@ -197,133 +210,533 @@ def crosswalk(size=48):
     return s
 
 
-# ------------------------------------------------------------- высокие объекты
-def building(size=48, floors=5, seed=1, roof=None, shade=0.85):
-    """Кубик дома с «крышей» и лёгким объёмом (тень по нижнему краю)."""
-    s = pygame.Surface((size, size), pygame.SRCALPHA)
-    base = roof or (92, 88, 84)
-    dark = tuple(int(c * shade) for c in base)
-    s.fill((*base, 255))
-    # конёк/скаты
-    for i in range(0, size, max(6, size // floors)):
-        pygame.draw.line(s, dark, (0, i), (size, i), 1)
-    pygame.draw.rect(s, (*dark, 255), (0, 0, size, 3))
-    pygame.draw.rect(s, (*dark, 255), (0, size - 4, size, 4))
+# ------------------------------------------------------------- здания (крыши)
+ROOF_STYLES = ("gable", "hip", "mansard", "flat", "monitor", "glass")
+
+
+def roof_sheet(w, h, style="gable", col=(96, 84, 78), seed=1):
+    """Текстура скатной кровли: ряды «жести» / фальца, конёк, выцветания."""
     rnd = _rng(seed)
-    # трубы / вентиляция
-    for _ in range(rnd.randint(1, 3)):
-        x, y = rnd.randrange(4, size - 6), rnd.randrange(4, size - 6)
-        pygame.draw.rect(s, (70, 66, 64), (x, y, 4, 4))
+    s = pygame.Surface((max(2, w), max(2, h)))
+    s.fill(col)
+    dark = _shade(col, 0.72)
+    light = _shade(col, 1.18)
+    if style in ("gable", "mansard", "monitor"):
+        step = 7 if style != "mansard" else 5
+        for x in range(0, w, step):                      # вертикальные фальцы
+            pygame.draw.line(s, dark, (x, 0), (x, h), 1)
+            pygame.draw.line(s, light, (x + 1, 0), (x + 1, h), 1)
+        ridge = h // 2 if style == "gable" else int(h * 0.32)
+        pygame.draw.rect(s, light, (0, ridge - 2, w, 4))         # конёк
+        pygame.draw.line(s, dark, (0, ridge + 2), (w, ridge + 2), 1)
+        if style == "mansard":                             # излом мансарды
+            pygame.draw.line(s, dark, (0, int(h * 0.7)), (w, int(h * 0.7)), 2)
+            g = noise_surface((w, h - int(h * 0.7)), dark, 18, seed + 3)
+            s.blit(g, (0, int(h * 0.7)))
+    elif style == "hip":
+        for i in range(0, min(w, h) // 2, 6):             # «валмовые» рёбра
+            pygame.draw.line(s, dark, (i, i), (w - i, i), 1)
+            pygame.draw.line(s, dark, (i, h - i), (w - i, h - i), 1)
+        pygame.draw.line(s, light, (0, h // 2), (w, h // 2), 2)
+    elif style == "glass":                                # крыша рынка
+        s.fill(_shade(col, 0.6))
+        for gx in range(0, w, 12):
+            pygame.draw.line(s, (150, 160, 168), (gx, 0), (gx, h), 2)
+        for gy in range(0, h, 16):
+            pygame.draw.line(s, (120, 130, 138), (0, gy), (w, gy), 2)
+        sh = pygame.Surface((w, h), pygame.SRCALPHA)
+        for i in range(0, w + h, 26):
+            pygame.draw.line(sh, (220, 232, 240, 40), (i, 0), (0, i), 3)
+        s.blit(sh, (0, 0))
+    else:                                                 # плоская кровля
+        g = noise_surface((w, h), col, 22, seed)
+        s.blit(g, (0, 0))
+        for i in range(0, w, TILE_ := 48):
+            pygame.draw.line(s, dark, (i, 0), (i, h), 1)
+        for j in range(0, h, TILE_):
+            pygame.draw.line(s, dark, (0, j), (w, j), 1)
+        pygame.draw.rect(s, light, (0, 0, w, 2))
+    # выцветание / пятна
+    ov = noise_surface((w, h), (0, 0, 0), 30, seed + 9)
+    ov.set_alpha(46)
+    s.blit(ov, (0, 0))
     return s
 
 
-def car(size=(46, 22), color=(90, 96, 110), seed=1, angle=0):
+def chimney_surf(size=12, brick=(104, 78, 66)):
+    """Кирпичная труба с шапкой и отлётом (псевдо-объём)."""
+    s = pygame.Surface((size * 3, size * 4), pygame.SRCALPHA)
+    body = pygame.Rect(size, size * 2, size, size * 2)
+    pygame.draw.rect(s, brick, body)
+    pygame.draw.rect(s, _shade(brick, 0.75), (body.right - 3, body.top, 3, body.height))
+    for y in range(body.top + 3, body.bottom, 4):
+        pygame.draw.line(s, _shade(brick, 0.85), (body.left, y), (body.right - 3, y), 1)
+    pygame.draw.rect(s, (58, 56, 54), (size - 2, size, size + 4, 5))   # колпак
+    pygame.draw.rect(s, (30, 30, 32), (size + 1, size + 1, size - 2, 3))  # канал
+    return s
+
+
+def building_block(px_w, px_h, color=(112, 100, 92), floors=5, style="gable",
+                   seed=1, tower=False):
+    """Статичная «печать» дома для буфера карты: крыша + объём + детали.
+
+    Псевдо-3D сверху: южная стена подсвечена полосой фасада с окнами,
+    севернее — тень; по коньку — трубы, слуховые окна, антенны.
+    Возвращает Surface размером (px_w + 10, px_h + 16) — рисовать по rect.
+    """
     rnd = _rng(seed)
-    w, h = size
-    body = pygame.Surface((w, h), pygame.SRCALPHA)
-    pygame.draw.rect(body, color, (0, 2, w, h - 4), border_radius=5)
-    light = tuple(min(255, c + 40) for c in color)
-    pygame.draw.rect(body, light, (w // 4, 4, w // 3, h - 8), border_radius=3)
-    pygame.draw.rect(body, (20, 22, 26), (w - 8, 4, 4, h - 8))
-    pygame.draw.rect(body, (200, 200, 160), (2, 4, 3, 4))
-    pygame.draw.rect(body, (200, 200, 160), (2, h - 8, 3, 4))
-    if angle:
-        body = pygame.transform.rotate(body, angle)
-    return body
+    pad_r, pad_b = 10, 16
+    s = pygame.Surface((px_w + pad_r, px_h + pad_b), pygame.SRCALPHA)
+    roof = roof_sheet(px_w, px_h, style, _shade(color, 0.86), seed)
+    s.blit(roof, (0, 0))
+    # южная стена (фасад, повёрнутый к «солнцу») — полоса с окнами
+    wall_h = 7 + min(6, floors)
+    wy = px_h
+    pygame.draw.rect(s, _shade(color, 1.06), (0, wy, px_w, wall_h))
+    pygame.draw.rect(s, _shade(color, 0.8), (0, wy, px_w, 1))
+    win_w, win_h = 5, max(3, wall_h - 4)
+    step = 13 if px_w > 90 else 11
+    for wx in range(4, px_w - 6, step):
+        lit = rnd.random() < 0.32
+        c = (232, 208, 140) if lit else (44, 50, 60)
+        pygame.draw.rect(s, c, (wx, wy + 2, win_w, win_h))
+        pygame.draw.rect(s, _shade(color, 0.6), (wx, wy + 2, win_w, win_h), 1)
+    # восточная стена — в тени
+    pygame.draw.rect(s, _shade(color, 0.55), (px_w, 2, pad_r - 2, px_h - 2))
+    # парапет с бликом
+    pygame.draw.rect(s, _shade(color, 1.2), (0, 0, px_w, px_h), 2)
+    pygame.draw.line(s, _shade(color, 1.35), (0, 0), (px_w, 0), 1)
+    # слуховые окна («бычки») по коньку
+    ridge_y = px_h // 2 if style == "gable" else int(px_h * 0.3)
+    if style in ("gable", "mansard", "hip"):
+        for dx in range(14, max(15, px_w - 14), 34):
+            dorm_x = min(px_w - 10, dx)
+            pygame.draw.rect(s, _shade(color, 1.1), (dorm_x, ridge_y - 6, 9, 7))
+            pygame.draw.rect(s, (60, 66, 76), (dorm_x + 2, ridge_y - 4, 5, 4))
+            pygame.draw.polygon(s, _shade(color, 0.7),
+                                [(dorm_x - 1, ridge_y - 6), (dorm_x + 10, ridge_y - 6),
+                                 (dorm_x + 5, ridge_y - 10)])
+    # дымовые трубы (с «отлётом» на северо-запад)
+    n_ch = max(1, px_w // 120) + rnd.randint(0, 1)
+    for i in range(n_ch):
+        cx = rnd.randrange(8, max(9, px_w - 20))
+        cy = rnd.randrange(6, max(7, px_h - 24))
+        ch = chimney_surf(7, _shade(color, 0.72))
+        s.blit(ch, (cx, cy - 10))
+    # антенна / флагшток на крупных домах
+    if px_w > 150 and rnd.random() < 0.7:
+        ax, ay = rnd.randrange(10, px_w - 10), rnd.randrange(6, px_h // 2)
+        pygame.draw.line(s, (70, 72, 76), (ax, ay), (ax, ay - 14), 2)
+        pygame.draw.line(s, (90, 92, 96), (ax - 5, ay - 12), (ax + 5, ay - 12), 1)
+        pygame.draw.line(s, (90, 92, 96), (ax - 4, ay - 9), (ax + 4, ay - 9), 1)
+    if tower:     # угловая башенка / эркер-башня (как у доходных домов)
+        tx, ty = px_w - 26, px_h // 2
+        pygame.draw.circle(s, _shade(color, 1.12), (tx, ty), 15)
+        pygame.draw.circle(s, _shade(color, 0.7), (tx, ty), 15, 2)
+        for a in range(0, 360, 45):
+            x2 = tx + math.cos(math.radians(a)) * 15
+            y2 = ty + math.sin(math.radians(a)) * 15
+            pygame.draw.line(s, _shade(color, 0.8), (tx, ty), (int(x2), int(y2)), 1)
+        pygame.draw.circle(s, (150, 120, 90), (tx, ty), 5)
+    return s
 
 
+# ------------------------------------------------------------ автомобили
+CAR_KINDS = ("sedan", "van", "bus", "truck")
+
+
+def car_body(kind="sedan", color=(90, 96, 110), seed=1):
+    """Статичный корпус машины вид сверху (без света/колёс)."""
+    rnd = _rng(seed)
+    dims = {"sedan": (46, 22), "van": (48, 24), "bus": (58, 23), "truck": (56, 23)}
+    w, h = dims.get(kind, (46, 22))
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    light = _shade(color, 1.25)
+    dark = _shade(color, 0.7)
+    glass = (30, 36, 46)
+    if kind == "sedan":
+        pygame.draw.rect(s, color, (0, 1, w, h - 2), border_radius=6)
+        pygame.draw.rect(s, dark, (0, 1, w, h - 2), 1, border_radius=6)
+        pygame.draw.rect(s, glass, (w // 2 - 9, 4, 18, h - 8), border_radius=3)  # салон
+        pygame.draw.rect(s, light, (w // 2 - 10, 3, 20, 2))                     # крыша блик
+        pygame.draw.line(s, dark, (w // 2 - 1, 3), (w // 2 - 1, h - 3), 1)      # B-стойка
+        pygame.draw.rect(s, (18, 20, 24), (w - 7, 4, 5, h - 8), border_radius=2)  # решётка
+        pygame.draw.rect(s, (235, 230, 190), (2, 4, 3, 4))                      # фары
+        pygame.draw.rect(s, (235, 230, 190), (2, h - 8, 3, 4))
+        pygame.draw.rect(s, (180, 40, 34), (w - 3, 4, 2, 4))                    # стопы
+        pygame.draw.rect(s, (180, 40, 34), (w - 3, h - 8, 2, 4))
+        if rnd.random() < 0.5:                                                  # антенна
+            pygame.draw.line(s, (200, 200, 205), (w - 12, 2), (w - 10, 0), 1)
+    elif kind == "van":
+        pygame.draw.rect(s, color, (0, 0, w, h), border_radius=5)
+        cab = (w // 3)
+        pygame.draw.rect(s, glass, (cab - 8, 3, 10, h - 6))                     # лобовое
+        pygame.draw.rect(s, _shade(color, 0.9), (cab, 2, w - cab - 3, h - 4), 1)
+        for vx in range(cab + 6, w - 8, 10):                                    # заклёпки/двери
+            pygame.draw.line(s, dark, (vx, 2), (vx, h - 2), 1)
+        pygame.draw.rect(s, (235, 230, 190), (2, 4, 3, 4))
+        pygame.draw.rect(s, (235, 230, 190), (2, h - 8, 3, 4))
+        pygame.draw.rect(s, (180, 40, 34), (w - 3, 3, 2, h - 6))
+    elif kind == "bus":
+        pygame.draw.rect(s, color, (0, 1, w, h - 2), border_radius=6)
+        pygame.draw.rect(s, glass, (6, 3, w - 14, 4))                           # окна слева
+        pygame.draw.rect(s, glass, (6, h - 7, w - 14, 4))
+        for bx in range(8, w - 10, 9):                                          # стойки
+            pygame.draw.line(s, color, (bx, 3), (bx, 7), 1)
+            pygame.draw.line(s, color, (bx, h - 7), (bx, h - 3), 1)
+        pygame.draw.rect(s, _shade(color, 1.2), (0, h // 2 - 1, w, 2))          # полоса
+        pygame.draw.rect(s, glass, (w - 8, 5, 4, h - 10))                       # лобовое
+        pygame.draw.rect(s, (235, 230, 190), (2, 4, 3, 4))
+        pygame.draw.rect(s, (235, 230, 190), (2, h - 8, 3, 4))
+    else:  # truck
+        cab_w = 16
+        pygame.draw.rect(s, _shade(color, 0.85), (cab_w, 1, w - cab_w, h - 2),
+                         border_radius=3)                                       # кузов
+        pygame.draw.rect(s, color, (0, 2, cab_w, h - 4), border_radius=4)       # кабина
+        pygame.draw.rect(s, glass, (cab_w - 7, 4, 5, h - 8))
+        for rx in range(cab_w + 4, w - 4, 8):                                   # рифление
+            pygame.draw.line(s, _shade(color, 0.65), (rx, 2), (rx, h - 2), 1)
+        pygame.draw.rect(s, (235, 230, 190), (2, 5, 2, 4))
+        pygame.draw.rect(s, (235, 230, 190), (2, h - 9, 2, 4))
+        pygame.draw.rect(s, (180, 40, 34), (w - 3, 4, 2, h - 8))
+    return s
+
+
+WHEEL_IMG = None
+HEADLIGHT_CONE = None
+
+
+def wheel_img():
+    global WHEEL_IMG
+    if WHEEL_IMG is None:
+        WHEEL_IMG = pygame.Surface((8, 8), pygame.SRCALPHA)
+        pygame.draw.circle(WHEEL_IMG, (16, 16, 18), (4, 4), 4)
+        pygame.draw.line(WHEEL_IMG, (60, 60, 64), (1, 4), (7, 4), 1)
+        pygame.draw.line(WHEEL_IMG, (60, 60, 64), (4, 1), (4, 7), 1)
+    return WHEEL_IMG
+
+
+def headlight_cone(length=64):
+    """Тёплый конус света фар (мягкий, через концентрические полигоны)."""
+    global HEADLIGHT_CONE
+    if HEADLIGHT_CONE is not None and HEADLIGHT_CONE.get_width() == length * 2:
+        return HEADLIGHT_CONE
+    w = length * 2
+    s = pygame.Surface((w, length), pygame.SRCALPHA)
+    for i in range(10):
+        k = i / 10
+        L = length * (1 - k * 0.82)
+        halfw = 6 + (length * 0.42) * k
+        a = int(26 * (1 - k) ** 1.5)
+        pts = [(0, length // 2 - 2), (L, length // 2 - halfw),
+               (L, length // 2 + halfw), (0, length // 2 + 2)]
+        pygame.draw.polygon(s, (255, 236, 190, a), pts)
+    HEADLIGHT_CONE = s
+    return s
+
+
+def make_car_frames(kind="sedan", color=(90, 96, 110), seed=1):
+    """Анимированный автомобиль: 8 направлений × (стоп / 4 фазы колёс
+    × мигалка поворотника). Ключ кадра: (moving_bool, wheel_phase 0..3, blink 0/1).
+
+    Возвращает dict[ (dir_idx, moving, phase, blink) ] -> Surface.
+    dir_idx: 0 = едет «на восток» (+x), дальше против часовой по 45°.
+    """
+    frames = {}
+    base = car_body(kind, color, seed)
+    bw, bh = base.get_size()
+    dims = {"sedan": (46, 22), "van": (48, 24), "bus": (58, 23), "truck": (56, 23)}
+    _, h = dims.get(kind, (46, 22))
+    # точки колёс (для кузова, ориентированного на восток)
+    if kind == "sedan":
+        wheels = [(9, 1), (9, h - 1), (bw - 12, 1), (bw - 12, h - 1)]
+    elif kind == "van":
+        wheels = [(10, 0), (10, h), (bw - 12, 0), (bw - 12, h)]
+    elif kind == "bus":
+        wheels = [(10, 0), (10, h), (bw - 22, 0), (bw - 22, h), (bw - 10, 0), (bw - 10, h)]
+    else:
+        wheels = [(8, 0), (8, h), (bw - 20, 0), (bw - 20, h), (bw - 8, 0), (bw - 8, h)]
+    # позиция переднего левого поворотника (для мигалки)
+    blink_pos = (3, 6) if kind != "truck" else (3, 6)
+
+    def compose(moving, phase, blink):
+        surf = pygame.Surface((bw + 8, h + 8), pygame.SRCALPHA)
+        # тень под машиной
+        sh = pygame.Surface((bw + 8, h + 8), pygame.SRCALPHA)
+        pygame.draw.ellipse(sh, (0, 0, 0, 60), (4, 5, bw, h))
+        surf.blit(sh, (0, 0))
+        wh = wheel_img()
+        for (wx, wy) in wheels:
+            img = pygame.transform.rotate(wh, phase * 45 if moving else 0)
+            surf.blit(img, img.get_rect(center=(wx + 4, wy + 4)))
+        surf.blit(base, (4, 4))
+        if blink:
+            gl = pygame.Surface((10, 10), pygame.SRCALPHA)
+            pygame.draw.circle(gl, (255, 190, 60, 220), (5, 5), 4)
+            pygame.draw.circle(gl, (255, 240, 180, 255), (5, 5), 2)
+            surf.blit(gl, (blink_pos[0], blink_pos[1]))
+        return surf
+
+    still = {}
+    for moving in (False, True):
+        for phase in (range(4) if moving else (0,)):
+            for blink in (0, 1):
+                still[(moving, phase, blink)] = compose(moving, phase, blink)
+    # поворот корпуса: pygame.rotate даёт CCW; индексы направлений тоже CCW
+    for d in range(8):
+        rotang = d * 45
+        for key, img in still.items():
+            r = pygame.transform.rotate(img, rotang) if rotang else img
+            frames[(d,) + key] = r
+    return frames
+
+
+def car_headlights(color=(90, 96, 110), kind="sedan"):
+    """Парные точки фар на носу (для свечения ночью) — локальные смещения."""
+    dims = {"sedan": (46, 22), "van": (48, 24), "bus": (58, 23), "truck": (56, 23)}
+    w, h = dims.get(kind, (46, 22))
+    return [(3, 6), (3, h - 6)]
+
+
+# ------------------------------------------------------------------ деревья
 def tree_canopy(size=64, seed=1):
-    """Крона сверху — прозрачный слой над головой игрока."""
+    """Крона сверху — плотная, многослойная, с солнечной стороной ярче."""
     rnd = _rng(seed)
     s = pygame.Surface((size, size), pygame.SRCALPHA)
     cx, cy = size // 2, size // 2
-    for _ in range(14):
+    base_r = size * 0.42
+    # тень кроны (низ/право темнее)
+    for _ in range(20):
         a = rnd.uniform(0, math.tau)
-        r = rnd.uniform(size * 0.18, size * 0.42)
+        r = rnd.uniform(base_r * 0.55, base_r)
+        x = int(cx + math.cos(a) * r * 0.75)
+        y = int(cy + math.sin(a) * r * 0.75 + 2)
+        col = (rnd.randint(24, 38), rnd.randint(40, 56), rnd.randint(24, 36), 235)
+        pygame.draw.circle(s, col, (x, y), rnd.randint(size // 9, size // 5))
+    # основнойmass
+    for _ in range(22):
+        a = rnd.uniform(0, math.tau)
+        r = rnd.uniform(0, base_r * 0.8)
         x = int(cx + math.cos(a) * r)
         y = int(cy + math.sin(a) * r)
-        col = (rnd.randint(38, 62), rnd.randint(58, 82), rnd.randint(36, 54), 235)
-        pygame.draw.circle(s, col, (x, y), rnd.randint(size // 8, size // 5))
-    pygame.draw.circle(s, (48, 70, 44, 240), (cx, cy), size // 4)
+        lit = 1.0 + 0.5 * (-math.cos(a) - math.sin(a)) / 2      # сев-зап светлее
+        g = int(rnd.randint(52, 74) * min(1.5, lit))
+        col = (int(34 * lit * 0.8), g, int(34 * lit * 0.75), 240)
+        pygame.draw.circle(s, col, (x, y), rnd.randint(size // 10, size // 6))
+    # блики листвы
+    for _ in range(10):
+        a = rnd.uniform(math.pi * 0.9, math.pi * 1.6)
+        r = rnd.uniform(0, base_r * 0.7)
+        x = int(cx + math.cos(a) * r)
+        y = int(cy + math.sin(a) * r)
+        pygame.draw.circle(s, (96, 122, 70, 200), (x, y), rnd.randint(2, 4))
     return s
 
 
-def lamp_post(size=24, seed=1):
+def tree_trunk(size=26, seed=1):
+    """Ствол с корнями и корой (рисуется ниже кроны, сортировка по Y)."""
+    rnd = _rng(seed)
     s = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.circle(s, (40, 40, 44, 160), (size // 2, size // 2), size // 2 - 1)
-    pygame.draw.circle(s, (70, 70, 76), (size // 2, size // 2), 4)
-    pygame.draw.circle(s, (230, 220, 150), (size // 2, size // 2), 2)
+    cx, cy = size // 2, size // 2 + 2
+    for _ in range(5):                                            # корни
+        a = rnd.uniform(0, math.tau)
+        pygame.draw.line(s, (44, 34, 26), (cx, cy),
+                         (int(cx + math.cos(a) * 9), int(cy + math.sin(a) * 7)), 2)
+    pygame.draw.circle(s, (66, 50, 38), (cx, cy), 6)
+    pygame.draw.circle(s, (40, 30, 24), (cx, cy), 6, 2)
+    pygame.draw.circle(s, (84, 66, 50), (cx - 1, cy - 1), 3)      # сердцевина света
+    return s
+
+
+# --------------------------------------------------------- объекты улицы
+def kiosk(seed=1):
+    """Ларёк «Сода/печать» — цветной навес-полоска + витрина."""
+    rnd = _rng(seed)
+    w, h = 44, 30
+    s = pygame.Surface((w + 8, h + 12), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (4, 6, w, h))
+    col = rnd.choice([(150, 60, 50), (70, 100, 140), (120, 110, 60)])
+    pygame.draw.rect(s, col, (4, 4, w, h), border_radius=3)
+    pygame.draw.rect(s, _shade(col, 0.7), (4, 4, w, h), 2, border_radius=3)
+    awning = pygame.Surface((w + 10, 10), pygame.SRCALPHA)
+    for i in range(0, w + 10, 8):
+        c = (220, 210, 200) if (i // 8) % 2 == 0 else _shade(col, 1.2)
+        pygame.draw.rect(awning, c, (i, 0, min(8, w + 10 - i), 8))
+    s.blit(awning, (3, h - 2))
+    pygame.draw.rect(s, (36, 42, 52), (8, 8, w - 16, 10))         # окно
+    for bx in range(10, w - 10, 6):                               # товары
+        pygame.draw.rect(s, rnd.choice([(200, 180, 90), (160, 90, 90), (120, 160, 120)]),
+                         (bx, 10, 3, 6))
+    return s
+
+
+def garage(seed=1):
+    """Гараж кооператива: ржавая крыша + ворота со щитами."""
+    rnd = _rng(seed)
+    w, h = 44, 26
+    s = pygame.Surface((w + 8, h + 12), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (4, 6, w, h))
+    rust = (104, 78, 60)
+    pygame.draw.rect(s, rust, (4, 4, w, h))
+    for i in range(4, w + 4, 6):                                  # профлист
+        pygame.draw.line(s, _shade(rust, 0.8), (i, 4), (i, 4 + h), 1)
+    ov = noise_surface((w, h), (0, 0, 0), 40, seed)
+    ov.set_alpha(60)
+    s.blit(ov, (4, 4))
+    gate = (58, 60, 64)
+    pygame.draw.rect(s, gate, (8, h - 2, w - 16, 8))              # ворота (фасад)
+    pygame.draw.line(s, _shade(gate, 0.7), (8, h + 2), (w, h + 2), 1)
+    pygame.draw.rect(s, (30, 32, 36), (w - 10, 6, 5, 5))          # замок/вентканал
     return s
 
 
 def bench(size=40, h=16, seed=1):
     rnd = _rng(seed)
-    s = pygame.Surface((size, h), pygame.SRCALPHA)
+    s = pygame.Surface((size, h + 4), pygame.SRCALPHA)
     col = (96, 74, 52)
-    pygame.draw.rect(s, col, (0, 0, size, h // 2), border_radius=2)
-    pygame.draw.rect(s, tuple(int(c * 0.8) for c in col), (0, h // 2, size, h // 2 - 1), border_radius=2)
-    for x in range(4, size, size // 4):
-        pygame.draw.line(s, (40, 40, 42), (x, h - 2), (x, h), 2)
+    pygame.draw.ellipse(s, (0, 0, 0, 50), (2, 6, size - 4, h - 4))
+    for i in range(2):                                            # две доски сиденья
+        y = 2 + i * 5
+        pygame.draw.rect(s, _shade(col, 1.0 + 0.08 * i), (1, y, size - 2, 4),
+                         border_radius=2)
+        pygame.draw.line(s, _shade(col, 0.7), (1, y + 4), (size - 2, y + 4), 1)
+    pygame.draw.rect(s, _shade(col, 0.8), (1, h - 4, size - 2, 3))  # спинка
+    for x in (4, size - 6):                                       # опоры
+        pygame.draw.line(s, (40, 40, 42), (x, h - 2), (x, h + 2), 2)
     return s
 
 
 def trash(size=24, seed=1):
-    s = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.circle(s, (58, 66, 58), (size // 2, size // 2), size // 2 - 2)
-    pygame.draw.circle(s, (40, 46, 42), (size // 2, size // 2), size // 2 - 5, 2)
-    pygame.draw.circle(s, (120, 120, 120), (size // 2, size // 2), 3)
+    s = pygame.Surface((size + 4, size + 4), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (2, 4, size, size))
+    cx = cy = (size + 4) // 2
+    pygame.draw.circle(s, (58, 66, 58), (cx, cy), size // 2 - 2)
+    pygame.draw.circle(s, (40, 46, 42), (cx, cy), size // 2 - 2, 2)
+    pygame.draw.circle(s, (34, 38, 34), (cx, cy), size // 2 - 5)  # горловина
+    pygame.draw.arc(s, (110, 116, 110), (cx - 8, cy - 8, 16, 16), math.pi, 2 * math.pi, 2)
     return s
+
+
+def lamp_post(seed=1):
+    """Фонарь: столб с основанием и светящейся головой (свет — отдельно)."""
+    s = pygame.Surface((26, 34), pygame.SRCALPHA)
+    cx = 13
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (cx - 8, 22, 16, 8))    # тень основания
+    pygame.draw.rect(s, (52, 54, 58), (cx - 2, 6, 4, 22))         # столб
+    pygame.draw.rect(s, (70, 72, 78), (cx - 1, 6, 1, 22))         # блик
+    pygame.draw.rect(s, (44, 46, 50), (cx - 5, 26, 10, 4))        # цоколь
+    pygame.draw.line(s, (52, 54, 58), (cx, 8), (cx + 7, 5), 3)    # кронштейн
+    pygame.draw.ellipse(s, (60, 62, 66), (cx + 3, 0, 10, 7))      # корпус лампы
+    pygame.draw.ellipse(s, (240, 226, 160), (cx + 5, 2, 6, 4))    # лампа
+    return s
+
+
+def lamp_glow(radius=90):
+    """Мягкое тёплое пятно света фонаря (ночью)."""
+    s = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+    for i in range(12, 0, -1):
+        r = int(radius * i / 12)
+        a = int(7 * (12 - i) ** 1.2)
+        pygame.draw.circle(s, (255, 224, 150, a), (radius, radius), r)
+    return s
+
+
+def tower(size=52, seed=1):
+    """Телевыжка: основание, решётчатая мачта, красное мигающее небо."""
+    s = pygame.Surface((size, size), pygame.SRCALPHA)
+    cx = size // 2
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (cx - 16, size - 14, 32, 10))
+    pygame.draw.polygon(s, (84, 86, 92), [(cx, 2), (cx + 14, size - 8), (cx - 14, size - 8)])
+    pygame.draw.polygon(s, (60, 62, 68), [(cx, 2), (cx + 14, size - 8), (cx - 14, size - 8)], 2)
+    for i in range(3, size - 10, 6):                              # перекладины
+        k = (i - 2) / (size - 10)
+        hw = int(14 * k)
+        pygame.draw.line(s, (66, 68, 74), (cx - hw, i + 2), (cx + hw, i + 2), 1)
+    pygame.draw.circle(s, (200, 60, 48), (cx, 5), 3)
+    return s
+
+
+def beacon_red(t_s):
+    """Пульсация красного огня вышки (для анимации в renderer)."""
+    return 0.5 + 0.5 * math.sin(t_s * 3.4)
 
 
 # ------------------------------------------------------------------- персонаж
-def person(radius=11, jacket=(62, 66, 74), skin=(196, 168, 140),
-           hat=(40, 42, 48), facing=0.0, shadow=True):
-    """Человек вид сверху: плечи-овал, куртка, шапка, рукавицы-кулаки."""
-    d = radius * 2 + 6
+JACKET_MAIN = (62, 66, 74)
+
+
+def person_frame(radius=11, jacket=JACKET_MAIN, facing=0.0, swing=0.0,
+                 bob=0.0, shadow=True, skin=(198, 170, 142), hat=(40, 42, 48)):
+    """Один кадр походки человека вид сверху.
+
+    swing ∈ [-1..1] — фаза маха рук (левая/правая в противофазе),
+    bob   ∈ [0..1] — вертикальный перекат корпуса (масштаб плеч).
+    """
+    d = radius * 2 + 8
     s = pygame.Surface((d, d), pygame.SRCALPHA)
     cx, cy = d // 2, d // 2
     if shadow:
-        sh = pygame.Surface((d, d), pygame.SRCALPHA)
-        pygame.draw.ellipse(sh, (0, 0, 0, 70), (2, 4, d - 4, d - 6))
-        s.blit(sh, (0, 0))
-    # плечи (овал поперёк направления)
-    ang = math.degrees(facing) + 90
+        pygame.draw.ellipse(s, (0, 0, 0, 70), (3, 5, d - 6, d - 7))
+    sy = 1.0 + 0.06 * bob                          # «присед-подъём» корпуса
     shoulder = pygame.Surface((d, d), pygame.SRCALPHA)
-    pygame.draw.ellipse(shoulder, jacket, (2, 4, d - 4, d - 8))
-    pygame.draw.ellipse(shoulder, tuple(int(c * 0.75) for c in jacket),
-                        (2, 4, d - 4, d - 8), 1)
-    rot = pygame.transform.rotate(shoulder, ang)
-    rect = rot.get_rect(center=(cx, cy))
-    s.blit(rot, rect.topleft)
-    # руки вдоль тела
-    for side in (-1, 1):
-        ax = cx + math.cos(facing + math.pi / 2 * side) * (radius - 2)
-        ay = cy + math.sin(facing + math.pi / 2 * side) * (radius - 2)
-        pygame.draw.circle(s, tuple(int(c * 0.9) for c in jacket),
-                           (int(ax), int(ay)), radius // 2)
-    # голова / шапка
-    hx = cx + math.cos(facing) * 2
-    hy = cy + math.sin(facing) * 2
+    wdt = int((d - 6) * (1.0 - 0.05 * abs(swing)))
+    pygame.draw.ellipse(shoulder, jacket, ((d - wdt) // 2, 4, wdt, int((d - 8) * sy)))
+    pygame.draw.ellipse(shoulder, _shade(jacket, 0.72),
+                        ((d - wdt) // 2, 4, wdt, int((d - 8) * sy)), 1)
+    pygame.draw.ellipse(shoulder, _shade(jacket, 1.18),
+                        ((d - wdt) // 2 + 2, 6, wdt - 8, 4))   # плечевой блик
+    rot = pygame.transform.rotate(shoulder, math.degrees(facing) + 90)
+    s.blit(rot, rot.get_rect(center=(cx, cy)))
+    # руки: вдоль тела, качаются вдоль направления движения
+    perp = facing + math.pi / 2
+    for side, ph in ((-1, swing), (1, -swing)):
+        hx = cx + math.cos(perp) * (radius - 1) * side \
+            + math.cos(facing) * ph * 5
+        hy = cy + math.sin(perp) * (radius - 1) * side \
+            + math.sin(facing) * ph * 5
+        pygame.draw.circle(s, _shade(jacket, 0.88), (int(hx), int(hy)), radius // 2)
+        pygame.draw.circle(s, (46, 40, 36), (int(hx), int(hy)), radius // 2 - 2)  # варежка
+    # голова чуть впереди корпуса
+    hx = cx + math.cos(facing) * 2.5
+    hy = cy + math.sin(facing) * 2.5
     pygame.draw.circle(s, skin, (int(hx), int(hy)), radius // 2 + 1)
     pygame.draw.circle(s, hat, (int(hx), int(hy)), radius // 2)
-    pygame.draw.circle(s, tuple(int(c * 0.7) for c in hat),
-                       (int(hx), int(hy)), radius // 2, 1)
+    pygame.draw.circle(s, _shade(hat, 0.7), (int(hx), int(hy)), radius // 2, 1)
+    pygame.draw.line(s, _shade(hat, 1.3), (int(hx - 3), int(hy - 3)),
+                     (int(hx + 2), int(hy - 4)), 1)
     return s
 
 
-def make_player_frames(jacket=(62, 66, 74)):
-    """8 направлений × 2 кадра покачивания — кэш спрайтов игрока."""
+def make_person_walkset(jacket=JACKET_MAIN, radius=11, hat=(44, 46, 52),
+                        skin=(200, 170, 142), steps=6):
+    """Походочный набор: 8 направлений × `steps` кадров цикла шага.
+
+    Ключ: (dir_index 0..7, frame 0..steps-1). Кадр 0 = стоит.
+    """
     frames = {}
     for i in range(8):
         ang = i * math.tau / 8
-        for bob in (0.0, 1.5):
-            f = ang + math.sin(bob) * 0.0
-            fr = person(radius=11, jacket=jacket, facing=f,
-                        hat=(44, 46, 52), skin=(200, 170, 142))
-            if bob:
-                fr = pygame.transform.rotozoom(fr, 3, 1.0)
-            frames[(i, int(bob))] = fr
+        frames[(i, 0)] = person_frame(radius, jacket, facing=ang, swing=0.0, bob=0.0,
+                                      hat=hat, skin=skin)
+        for fr in range(1, steps):
+            ph = fr / steps * math.tau
+            frames[(i, fr)] = person_frame(radius, jacket, facing=ang,
+                                           swing=math.sin(ph),
+                                           bob=abs(math.sin(ph)),
+                                           hat=hat, skin=skin)
     return frames
+
+
+# совместимость со старым кодом
+def person(radius=11, jacket=(62, 66, 74), skin=(196, 168, 140),
+           hat=(40, 42, 48), facing=0.0, shadow=True):
+    return person_frame(radius, jacket, facing=facing, shadow=shadow,
+                        skin=skin, hat=hat)
+
+
+def make_player_frames(jacket=(62, 66, 74)):
+    """Старый API -> новый набор ходьбы (8 направлений × 6 кадров)."""
+    return make_person_walkset(jacket=jacket)
 
 
 # --------------------------------------------------------------------- предметы
