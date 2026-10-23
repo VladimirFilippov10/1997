@@ -20,8 +20,13 @@ import random
 import pygame
 from pygame import surfarray
 
-# размер тайла карты (используется в тайловых текстурах: траншеи, решётки, ступени)
-TILE = 48
+# размер тайла карты (используется в тайловых текстурах: траншеи, решётки, ступени).
+# Берём из config, чтобы модуль не падал NameError, если TILE там переопределён;
+# при циклическом импорте — fallback 48.
+try:
+    from config import TILE
+except Exception:  # pragma: no cover
+    TILE = 48
 
 try:
     import numpy as np
