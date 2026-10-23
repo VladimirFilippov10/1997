@@ -89,9 +89,11 @@ def draw_hotbar(screen, inv, renderer_font, icons, sel_frames, base_x=None, y=No
         # номер слота (10-й показываем как 0)
         num = str((i + 1) % 10)
         renderer_font(screen, num, (x + 4, y + 2), size=13, color=(150, 152, 158))
-    # подпись выбранного
+    # подпись выбранного (рисуем по центру через topleft — lambda не знает center)
     it = inv.selected_item()
     if it:
-        renderer_font(screen, it.label, (screen.get_width() // 2, y - 16),
-                      size=18, color=COL_ACCENT, center=True, bold=True)
+        wpx = len(it.label) * 9.5
+        renderer_font(screen, it.label,
+                      (int(screen.get_width() / 2 - wpx / 2), max(0, y - 24)),
+                      size=18, color=COL_ACCENT, bold=True)
     return pygame.Rect(base_x, y, n * size + (n - 1) * gap, size)
