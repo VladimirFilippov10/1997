@@ -38,6 +38,8 @@ class Renderer:
         self._prop_cache = {}
         self._npc_cache = {}
         self._car_cache = {}
+        self._vis = set()               # (x,y) тайлов с видимой стеной — для отладки
+        self.show_walls = False         # F3: подсветка невидимых стен
         self.weather = None               # game подвешивает WeatherSystem
         self.night = 0.0                  # 0 день .. 1 ночь (lerp яркости)
         self.chimneys = []                # точки дымовых труб (world px)
@@ -59,21 +61,10 @@ class Renderer:
             "sand": T.sand(size, 6),
             "yard": T.noise_surface((size, size), (70, 72, 66), 26, 12, 3),
         }
-        # вариации асфальта, чтобы не было заметно сетки
-        variants = [T.asphalt(size, s) for s in (21, 22, 23)]
+        # вариации асфальта, чтобы не было заметно сетки — 6 штук
+        variants = [T.asphalt(size, s) for s in (21, 22, 23, 24, 25, 26)]
         self.variants_asphalt = variants
         self.tiles = cache
-        # плоские
-        self.flat_tiles = {
-            "curb": T.curb_tile(size, 9),
-            "mark": T.road_marking(size, 10),
-            "puddle": T.puddle(size, 11),
-            "crosswalk": T.crosswalk(size),
-            "track": self._track_tile(size),
-            "trench": T.trench_tile(3),
-            "grate": T.grate_tile(5),
-            "steps": T.steps_tile(7),
-        }
         self.stains = []
         for s in range(6):
             surf = pygame.Surface((size, size), pygame.SRCALPHA)
@@ -81,6 +72,28 @@ class Renderer:
                                (size // 2 + (s % 3 - 1) * 6, size // 2 + (s // 3 - 1) * 5),
                                size // 4)
             self.stains.append(surf)
+        # явный список «плоских» тайлов: если типа нет — генерируем заглушку,
+        # а не молча теряем объект (раньше "patch" не рисовался нигде)
+        builders = {
+            "curb": lambda: T.curb_tile(size, 9),
+            "mark": lambda: T.road_marking(size, 10),
+            "puddle": lambda: T.puddle(size, 11),
+            "crosswalk": lambda: T.crosswalk(size),
+            "track": lambda: self._track_tile(size),
+            "trench": lambda: T.trench_tile(3),
+            "grate": lambda: T.grate_tile(5),
+            "steps": lambda: T.steps_tile(7),
+            "patch": lambda: T.patch_tile(size, 41),
+            "porch": lambda: T.steps_tile(9),
+        }
+        self.flat_tiles = {}
+        for name, fn in builders.items():
+            try:
+                self.flat_tiles[name] = fn()
+            except Exception:
+                ph = pygame.Surface((size, size), pygame.SRCALPHA)
+                ph.fill((90, 90, 96, 120))
+                self.flat_tiles[name] = ph
         self.leaves = []
         for s in range(4):
             surf = pygame.Surface((size, size), pygame.SRCALPHA)
@@ -158,6 +171,11 @@ class Renderer:
         rnd = random.Random(d.seed * 3 + 1)
         for w in d.walls:
             rect = pygame.Rect(w["x"] * TILE, w["y"] * TILE, w["w"] * TILE, w["h"] * TILE)
+            # регистрируем видимые тайлы — всё, чего нет в этом списке,
+            # но попало в blocked, станет «невидимой стеной» (ловится F3)
+            for ty in range(w["y"], w["y"] + w["h"]):
+                for tx in range(w["x"], w["x"] + w["w"]):
+                    self._vis.add((tx, ty))
             block = T.building_block(rect.width, rect.height, w["color"],
                                      w.get("floors", 5), w.get("style", "gable"),
                                      w.get("seed", 1), w.get("tower", False))
@@ -194,38 +212,57 @@ class Renderer:
         img = self._prop_cache.get(key)
         if img is not None:
             return img
-        if t == "lamp":
-            img = T.lamp_post(p.get("seed", 1))
-        elif t == "bench":
-            img = T.bench(40, 16, p.get("seed", 1))
-            if p.get("angle"):
-                img = pygame.transform.rotate(img, p["angle"])
-        elif t == "trash":
-            img = T.trash(24, p.get("seed", 1))
-        elif t == "trunk":
-            img = T.tree_trunk(26, p.get("seed", 1))
-        elif t == "tower":
-            img = T.tower(52, p.get("seed", 1))
-        elif t == "kiosk":
-            img = T.kiosk(p.get("seed", 1))
-        elif t == "garage":
-            img = T.garage(p.get("seed", 1))
-        elif t == "stall":
-            img = T.stall(p.get("seed", 1), p.get("model") or "metal")
-        elif t == "phonebox":
-            img = T.phonebox(p.get("seed", 1))
-        elif t == "arcade":
-            img = T.arcade(p.get("seed", 1))
-        elif t == "bin":
-            img = T.dumpster(p.get("seed", 1))
-        elif t == "clothesline":
-            img = T.clothesline(p.get("seed", 1))
-        elif t == "bare_tree":
-            img = T.bare_tree(p.get("seed", 1))
-        else:
-            img = pygame.Surface((10, 10), pygame.SRCALPHA)
+        builders = {
+            "lamp": lambda: T.lamp_post(p.get("seed", 1)),
+            "bench": lambda: T.bench(40, 16, p.get("seed", 1)),
+            "trash": lambda: T.trash(24, p.get("seed", 1)),
+            "trunk": lambda: T.tree_trunk(26, p.get("seed", 1)),
+            "tower": lambda: T.tower(52, p.get("seed", 1)),
+            "kiosk": lambda: T.kiosk(p.get("seed", 1)),
+            "garage": lambda: T.garage(p.get("seed", 1)),
+            "stall": lambda: T.stall(p.get("seed", 1), p.get("model") or "metal"),
+            "phonebox": lambda: T.phonebox(p.get("seed", 1)),
+            "arcade": lambda: T.arcade(p.get("seed", 1)),
+            "bin": lambda: T.dumpster(p.get("seed", 1)),
+            "clothesline": lambda: T.clothesline(p.get("seed", 1)),
+            "bare_tree": lambda: T.bare_tree(p.get("seed", 1)),
+            # интерьерная мебель: стол, плита, витрина, ящик, полка, холодильник
+            "table": lambda: self._interior_box((78, 58, 44), 30),
+            "stove": lambda: self._interior_box((70, 70, 74), 28),
+            "counter": lambda: self._interior_box((96, 78, 58), 40),
+            "crate": lambda: self._interior_box((112, 92, 60), 24),
+            "shelf": lambda: self._interior_box((84, 70, 56), 34),
+            "fridge": lambda: self._interior_box((188, 188, 182), 26),
+            "mailbox": lambda: self._interior_box((96, 104, 112), 22),
+        }
+        fn = builders.get(t)
+        if fn is not None:
+            try:
+                img = fn()
+            except Exception:
+                img = None
+        if img is None:
+            # заглушка вместо пустого пикселя — объект виден и не «исчезает»
+            img = pygame.Surface((16, 16), pygame.SRCALPHA)
+            img.fill((120, 118, 112, 220))
+            pygame.draw.rect(img, (60, 60, 64, 255), (0, 0, 16, 16), 1)
+        if p.get("angle"):
+            img = pygame.transform.rotate(img, p["angle"])
         self._prop_cache[key] = img
         return img
+
+    def _interior_box(self, col, size):
+        """Простая мебель для интерьеров: крышка + тень."""
+        s = pygame.Surface((size, size), pygame.SRCALPHA)
+        pygame.draw.rect(s, col, (1, 1, size - 2, size - 2), border_radius=2)
+        light = tuple(min(255, int(c * 1.25)) for c in col)
+        dark = tuple(int(c * 0.6) for c in col)
+        pygame.draw.line(s, light, (2, 2), (size - 3, 2))
+        pygame.draw.line(s, dark, (2, size - 3), (size - 3, size - 3))
+        sh = pygame.Surface((size, 6), pygame.SRCALPHA)
+        sh.fill((0, 0, 0, 70))
+        s.blit(sh, (0, size - 2))
+        return s
 
     def _get_tree(self, o):
         key = ("tree", o.get("size"), o.get("seed"))
@@ -314,7 +351,9 @@ class Renderer:
                     self._blit_n += 1
 
         # ---- предметы на земле (поверх карты)
-        for it in d.items:
+        lvl_now = d.active_grid()
+        item_list = lvl_now["items"] if lvl_now else d.items
+        for it in item_list:
             if it["taken"]:
                 continue
             sx, sy = it["x"] - camx, it["y"] - camy
@@ -349,14 +388,22 @@ class Renderer:
         for m in d.movers:
             if view.inflate(160, 160).collidepoint(m["x"], m["y"]):
                 draw_list.append((m["y"], "mover", m))
-        for n in d.npcs:
+        lvl = d.active_grid()
+        npcs = lvl["npcs"] if lvl else d.npcs
+        items = lvl["items"] if lvl else d.items
+        props_in = lvl["props"] if lvl else None
+        if props_in is not None:
+            for p in props_in:
+                if view.inflate(140, 140).collidepoint(p["x"], p["y"]):
+                    draw_list.append((p["y"], "prop", p))
+        for n in npcs:
             if view.inflate(140, 140).collidepoint(n["x"], n["y"]):
                 draw_list.append((n["y"], "npc", n))
         draw_list.append((player.y, "player", player))
         draw_list.sort(key=lambda e: e[0])
 
         lights = []          # источники света для ночного оверлея
-        cones = []           # конусы фар (x, y, angle_deg)
+        self._lights_n = 0   # сколько источников реально горит (для баланса лучей)
 
         for _, kind, obj in draw_list:
             if kind == "prop":
@@ -364,10 +411,13 @@ class Renderer:
                 sx, sy = obj["x"] - camx, obj["y"] - camy
                 self.screen.blit(img, img.get_rect(center=(sx, sy)))
                 self._blit_n += 1
-                if obj["t"] == "lamp":
+                if obj["t"] == "lamp" and self.night > 0.25:
                     lights.append((sx, sy - 20, 1.0))
-                elif obj["t"] == "car" and self.night > 0.35:
-                    pass   # припаркованные без света
+                    self._lights_n += 1
+                elif obj["t"] in ("stall", "kiosk") and self.night > 0.35:
+                    lights.append((sx, sy - 8, 0.5))
+                elif obj["t"] == "arcade" and self.night > 0.3:
+                    lights.append((sx, sy - 6, 0.35))
             elif kind == "mover":
                 m = obj
                 still, mv, hl = self._get_car(m.get("model", m.get("kind", "sedan")),
@@ -381,9 +431,9 @@ class Renderer:
                 img = pygame.transform.rotate(img, di * 45) if di else img
                 sx, sy = m["x"] - camx, m["y"] - camy
                 rect = img.get_rect(center=(sx, sy))
-                # конусы фар ночью — под корпусом
-                if self.night > 0.25:
-                    cone = T.headlight_cone(64)
+                # конусы фар ночью — под корпусом; габариты/стопы в сумерках
+                if self.night > 0.2:
+                    cone = T.headlight_cone(72)
                     for (hx, hy) in hl:
                         pt = pygame.math.Vector2(hx - img.get_width() / 2,
                                                  hy - img.get_height() / 2)
@@ -392,7 +442,23 @@ class Renderer:
                         cr = pygame.transform.rotate(cone, ddeg)
                         self.screen.blit(cr, cr.get_rect(center=(cxp + cr.get_width() / 2 - 10, cyp)))
                         lights.append((cxp, cyp, 1.0))
+                        self._lights_n += 1
                         self._blit_n += 1
+                    # красные габариты сзади машины (корпус смотрит на восток:
+                    # x=0 — корма, x=w — морда; pygame.rotate(90) поднимает нос на экран)
+                    w_img, h_img = img.get_size()
+                    ang = -di * 45.0
+                    for off in (-h_img / 4, h_img / 4):
+                        p = pygame.math.Vector2(3, h_img / 2 + off).rotate(ang)
+                        rx = sx + p.x - w_img / 2
+                        ry = sy + p.y - h_img / 2
+                        rad = 3 if m.get("brake") else 2
+                        ta = int(210 * min(1.0, self.night * 1.8))
+                        dot = pygame.Surface((rad * 2 + 6, rad * 2 + 6), pygame.SRCALPHA)
+                        pygame.draw.circle(dot, (255, 60, 40, ta // 3),
+                                           (rad + 3, rad + 3), rad + 3)
+                        pygame.draw.circle(dot, (255, 40, 30, ta), (rad + 3, rad + 3), rad)
+                        self.screen.blit(dot, (int(rx - rad - 3), int(ry - rad - 3)))
                 self.screen.blit(img, rect)
                 self._blit_n += 1
             elif kind == "npc":
@@ -440,21 +506,44 @@ class Renderer:
                         self._prop_cache[("awning", o.get("size"), o.get("seed"))] = img
                     self.screen.blit(img, img.get_rect(midbottom=(sx, sy)))
                     self._blit_n += 1
-        # ---- вывески магазинов (Ломоносова): рисуются поверх статичной карты
+        # ---- вывески магазинов: светящиеся табло (ночью — с ореолом и неоновым мерцанием)
+        if self.night > 0.15:
+            for sg in getattr(d, "signs", []):
+                sx, sy = sg["x"] - camx, sg["y"] - camy
+                if view.inflate(260, 80).collidepoint(sx, sy):
+                    lights.append((sx, sy, 0.7))
         for sg in getattr(d, "signs", []):
             sx, sy = sg["x"] - camx, sg["y"] - camy
             if -200 < sx < WINDOW_W + 200 and -60 < sy < WINDOW_H + 60:
                 sf = get_font(13, bold=True)
-                txt = sf.render(sg["text"], True, (232, 224, 190))
+                night_k = self.night
+                flick = 1.0
+                if night_k > 0.4:      # ламповое табло слегка дрожит
+                    flick = 0.86 + 0.14 * math.sin(time_s * 9.0 + sg["x"] * 0.13) \
+                        * math.sin(time_s * 3.7 + sg["y"] * 0.07)
+                txt_col = (int(232 * flick + 20 * night_k),
+                           int(224 * flick + 14 * night_k),
+                           int(190 * flick))
+                txt = sf.render(sg["text"], True, txt_col)
                 rect = txt.get_rect(center=(int(sx), int(sy)))
-                bg = pygame.Surface((rect.width + 12, rect.height + 6), pygame.SRCALPHA)
-                bg.fill((24, 22, 28, 210))
+                bgw, bgh = rect.width + 12, rect.height + 6
+                bg = pygame.Surface((bgw, bgh), pygame.SRCALPHA)
+                # днём — тёмная щита, ночью — подсвеченная изнутри
+                k = int(210 + 40 * night_k)
+                bg.fill((int(24 + 30 * night_k * flick),
+                         int(22 + 26 * night_k * flick),
+                         int(28 + 20 * night_k * flick), k))
                 self.screen.blit(bg, (rect.left - 6, rect.top - 3))
                 pygame.draw.rect(self.screen, (70, 66, 60),
-                                 (rect.left - 6, rect.top - 3,
-                                  rect.width + 12, rect.height + 6), 1)
+                                 (rect.left - 6, rect.top - 3, bgw, bgh), 1)
+                if night_k > 0.25:
+                    halo = pygame.Surface((bgw + 44, bgh + 44), pygame.SRCALPHA)
+                    a = int(60 * night_k * max(0.4, flick))
+                    pygame.draw.rect(halo, (255, 214, 140, a),
+                                     (10, 10, bgw + 24, bgh + 24), border_radius=10)
+                    self.screen.blit(halo, (rect.left - 6 - 22, rect.top - 3 - 22))
                 self.screen.blit(txt, rect)
-                self._blit_n += 2
+                self._blit_n += 3
         # ---- ночные огоньки ларьков
         if self.night > 0.2:
             for lx, ly in getattr(d, "stall_lights", []):
@@ -505,49 +594,76 @@ class Renderer:
         if self.night > 0.02:
             self._draw_night(lights)
 
+        # ---- F3: подсветка невидимых стен (blocked-клетки без видимой графики)
+        if getattr(self, "show_walls", False):
+            for (tx, ty) in d.blocked:
+                if (tx, ty) not in self._vis:
+                    pygame.draw.rect(self.screen, (255, 40, 40, 90),
+                                     (tx * TILE - camx, ty * TILE - camy, TILE, TILE))
+                    pygame.draw.rect(self.screen, (255, 120, 120),
+                                     (tx * TILE - camx, ty * TILE - camy, TILE, TILE), 1)
+            for p in d.props:
+                if p.get("solid") and p["t"] != "car":
+                    r = pygame.Rect(p["x"] - p.get("r", 10) - camx,
+                                    p["y"] - p.get("r", 10) - camy,
+                                    p.get("r", 10) * 2, p.get("r", 10) * 2)
+                    pygame.draw.rect(self.screen, (80, 160, 255), r, 1)
+
         # ---- виньетка / туман + погода поверх мира
         self._vignette(camx, camy, player)
         if self.weather:
             self.weather.draw_overlay(self.screen, camx, camy)
 
     def _draw_night(self, lights):
-        dark = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        """Ночь: маска темноты с «дырами» от фонарей, фар и вывесок."""
         a = int(175 * self.night)
+        dark = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
         dark.fill((8, 10, 20, a))
         glow = self._lamp_glow()
-        punch = pygame.Surface((glow.get_width(), glow.get_height()), pygame.SRCALPHA)
-        punch.fill((0, 0, 0, 0))
-        # «вычитание» темноты: рисуем прозрачные пятна через colorkey-маску
-        import pygame.surfarray as sa
-        base = pygame.surfarray.pixels_alpha(dark)
-        gp = pygame.surfarray.pixels_alpha(glow)
-        # инверсия: где свет — уменьшаем альфу темноты
-        for (lx, ly, inten) in lights[:60]:
-            r = glow.get_rect(center=(int(lx), int(ly)))
-            if not (-200 < r.left < WINDOW_W + 200):
-                continue
-            sub = base[max(0, r.left):min(WINDOW_W, r.right),
-                       max(0, r.top):min(WINDOW_H, r.bottom)]
-            gsub = gp[r.left - r.x if r.left >= 0 else 0:(r.right - r.x) if r.right <= WINDOW_W else glow.get_width(),
-                      r.top - r.y if r.top >= 0 else 0:(r.bottom - r.y) if r.bottom <= WINDOW_H else glow.get_height()]
-            try:
-                import numpy as np
-                red = int(a * inten)
+        gp = None
+        try:
+            import numpy as np
+            base = pygame.surfarray.pixels_alpha(dark).copy()
+            gp = pygame.surfarray.pixels_alpha(glow)
+            for (lx, ly, inten) in lights[:48]:
+                r = glow.get_rect(center=(int(lx), int(ly)))
+                x0, x1 = max(0, r.left), min(WINDOW_W, r.right)
+                y0, y1 = max(0, r.top), min(WINDOW_H, r.bottom)
+                if x0 >= x1 or y0 >= y1:
+                    continue
+                gx0, gy0 = x0 - r.left, y0 - r.top
+                gsub = gp[gx0:gx0 + (x1 - x0), gy0:gy0 + (y1 - y0)]
+                sub = base[x0:x1, y0:y1]
+                red = int(a * min(1.0, inten))
                 sub -= np.minimum(sub, (gsub.astype(np.int16) * red // 255)).astype(sub.dtype)
-            except Exception:
-                pass
-        del base, gp
+            pygame.surfarray.pixels_alpha(dark)[:, :] = base
+            del base
+        except Exception:
+            pass
         self.screen.blit(dark, (0, 0))
         # тёплые ореоны поверх (аддитивно)
         warm = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
-        for (lx, ly, inten) in lights[:60]:
-            img = pygame.transform.scale(glow, (int(192 * inten), int(192 * inten)))                 if inten != 1.0 else glow
+        for (lx, ly, inten) in lights[:48]:
+            size = max(24, int(192 * inten))
+            img = pygame.transform.scale(glow, (size, size)) if size != glow.get_width() else glow
             tmp = img.copy()
             tmp.set_alpha(int(70 * self.night * inten))
             warm.blit(tmp, tmp.get_rect(center=(int(lx), int(ly))))
         self.screen.blit(warm, (0, 0))
+        # объёмные лучи в глубокой ночи — только ближайшие источники
+        if self.night > 0.45 and lights:
+            beam = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+            for (bx, by, bi) in lights[:12]:
+                length = int(130 * bi)
+                seg = pygame.Surface((length, 30), pygame.SRCALPHA)
+                for i in range(0, length, 5):
+                    al = int(22 * bi * (1 - i / length))
+                    pygame.draw.line(seg, (255, 226, 170, al), (i, 6 + i % 4),
+                                     (i, 24 - i % 4))
+                rect = seg.get_rect(midleft=(int(bx), int(by)))
+                beam.blit(seg, rect)
+            self.screen.blit(beam, (0, 0))
         self._blit_n += 2
-
 
     def _vignette(self, camx, camy, player):
         if not hasattr(self, "_vig"):
@@ -564,37 +680,111 @@ class Renderer:
 
 # ---------------------------------------------------------------- шрифты
 _FONT_CACHE = {}
+_FONT_PATHS = None       # найденный системный TTF с кириллицей
+
+
+def _find_cyrillic_fonts():
+    """Список путей к TTF, гарантированно содержащим кириллицу
+    (DejaVu/Liberation на Linux, Arial на Windows, LucidaGrande/PingFang на macOS)."""
+    global _FONT_PATHS
+    if _FONT_PATHS is not None:
+        return _FONT_PATHS
+    import glob
+    import os as _os
+    import platform
+    cands = []
+    names = ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf",
+             "LiberationSans-Regular.ttf", "LiberationSans-Bold.ttf",
+             "FreeSans.ttf"]
+    dirs = ["/usr/share/fonts", "/usr/local/share/fonts",
+            _os.path.join(_os.path.expanduser("~"), ".fonts"),
+            _os.path.join(_os.environ.get("WINDIR", "C:\\Windows"), "Fonts")]
+    for d in dirs:
+        for pat in names:
+            cands += glob.glob(_os.path.join(d, "**", pat), recursive=True)
+    if platform.system() == "Darwin":
+        cands += ["/System/Library/Fonts/Supplemental/Arial.ttf",
+                  "/Library/Fonts/Arial.ttf",
+                  "/System/Library/Fonts/Helvetica.ttc"]
+    else:
+        cands += [_os.path.join(_os.environ.get("WINDIR", "C:\\Windows"),
+                                "Fonts", "arial.ttf"),
+                  _os.path.join(_os.environ.get("WINDIR", "C:\\Windows"),
+                                "Fonts", "segoeui.ttf"),
+                  _os.path.join(_os.environ.get("WINDIR", "C:\\Windows"),
+                                "Fonts", "tahoma.ttf")]
+    ok = []
+    test = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+    for p in cands:
+        try:
+            ft = pygame.font.Font(p, 16)
+            w1 = ft.size(test)[0]
+            w2 = ft.size("AAAAAAAAAAAAAA")[0]
+            if w1 > 40 and abs(w1 - w2) > 2:   # не «тофу» и не одинаковые глифы
+                ok.append(p)
+        except Exception:
+            continue
+    _FONT_PATHS = ok
+    return ok
+
+
+class _NoFont:
+    """Заглушка для среды без шрифтов (CI/headless)."""
+
+    def __init__(self, size):
+        self.size_px = size
+
+    def render(self, text, aa=False, color=(0, 0, 0)):
+        h = max(8, int(self.size_px * 1.2))
+        return pygame.Surface((max(1, 7 * len(str(text))), h), pygame.SRCALPHA)
+
+    def size(self, text):
+        return (max(1, 7 * len(str(text))), max(8, int(self.size_px * 1.2)))
+
+    def get_height(self):
+        return max(8, int(self.size_px * 1.2))
+
+    def get_ascent(self):
+        return max(6, int(self.size_px * 0.9))
 
 
 def get_font(size, bold=False):
     key = (size, bold)
     f = _FONT_CACHE.get(key)
     if f is None:
-        try:
-            f = pygame.font.SysFont("dejavusans,liberation,freesans,arial", size, bold=bold)
-        except Exception:
+        f = None
+        # 1) проверенные TTF с кириллицей — самый надёжный путь
+        paths = _find_cyrillic_fonts()
+        if paths:
+            want = "Bold" if bold else "Regular"
+            best = None
+            for p in paths:
+                base = p.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                if want.lower() in base.lower():
+                    best = p
+                    break
+            try:
+                f = pygame.font.Font(best or paths[0], size)
+                if best is None and bold:
+                    f.set_bold(True)
+            except Exception:
+                f = None
+        # 2) SysFont как запасной вариант
+        if f is None:
+            try:
+                f = pygame.font.SysFont(
+                    "dejavusans,liberationsans,freesans,arial,helveticaneue",
+                    size, bold=bold)
+            except Exception:
+                f = None
+        # 3) встроенный фонт pygame + ручной включаемый bold
+        if f is None:
             try:
                 f = pygame.font.Font(None, size)
+                if bold:
+                    f.set_bold(True)
             except Exception:
-                # в среде без шрифтов (например, CI/headless-контейнер) —
-                # заглушка, рисующая пустые изображения заданного размера
-                class _NoFont:
-                    def render(self, text, aa=False, color=(0, 0, 0)):
-                        h = max(8, int(size * 1.2))
-                        s = pygame.Surface((max(1, 7 * len(str(text))), h),
-                                           pygame.SRCALPHA)
-                        return s
-
-                    def size(self, text):
-                        return (max(1, 7 * len(str(text))), max(8, int(size * 1.2)))
-
-                    def get_height(self):
-                        return max(8, int(size * 1.2))
-
-                    def get_ascent(self):
-                        return max(6, int(size * 0.9))
-
-                f = _NoFont()
+                f = _NoFont(size)
         _FONT_CACHE[key] = f
     return f
 
