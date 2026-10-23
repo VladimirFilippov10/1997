@@ -1,0 +1,4 @@
+# Зависимости игры «Брат: Питер»
+# pygame-ce (Community Edition) — быстрее и стабильнее обычного pygame,
+# ставится одним пакетом на Windows / macOS / Linux.
+pygame-ce>=2.5.0
