@@ -559,8 +559,204 @@ def chimney_surf(size=12, brick=(104, 78, 66)):
     return s
 
 
+def facade_wall(px_w, wall_h, color=(112, 100, 92), floors=5, seed=1,
+                lit_p=0.0, shop=None, ground_floor=True):
+    """Вертикальный фасад доходного дома: этажи окон, руст, карнизы, витрина.
+
+    Возвращает Surface (px_w, wall_h). Окна считаются по числу этажей
+    (floors); на первом этаже — руст и витрины магазина (shop — вывеска).
+    lit_p > 0 включает «жёлтые окна» (сумерки/ночь).
+    """
+    rnd = _rng(seed)
+    s = pygame.Surface((px_w, wall_h), pygame.SRCALPHA)
+    base = _shade(color, 1.0)
+    s.fill(base)
+    # фактура штукатурки
+    for _ in range(max(12, px_w * wall_h // 90)):
+        x, y = rnd.randrange(px_w), rnd.randrange(wall_h)
+        c = _shade(color, rnd.uniform(0.88, 1.12)) + (rnd.randint(10, 40),)
+        pygame.draw.circle(s, c, (x, y), rnd.randint(1, 2))
+    # местами проступает кирпич (отвалившаяся побелка)
+    if rnd.random() < 0.6 and px_w > 24 and wall_h > 20:
+        bx = rnd.randrange(max(1, px_w - 20))
+        by = rnd.randrange(max(1, wall_h - 16))
+        bw = rnd.randint(8, min(26, px_w - 1))
+        bh = rnd.randint(6, min(16, wall_h - 1))
+        brick = (int(base[0] * 0.62 + 70), int(base[1] * 0.42 + 30),
+                 int(base[2] * 0.38 + 24))
+        patch = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        patch.fill(brick + (150,))
+        for yy in range(0, bh, 4):
+            pygame.draw.line(patch, (90, 52, 40, 160), (0, yy), (bw, yy))
+        for xx in range(0, bw, 7):
+            pygame.draw.line(patch, (90, 52, 40, 140), (xx, 0), (xx, bh))
+        s.blit(patch, (bx, by))
+    n_f = max(2, floors)
+    fh = wall_h / float(n_f)
+    win_c = (40, 46, 56)
+    frame_c = _shade(color, 0.55)
+    trim_c = _shade(color, 1.22)
+    for f in range(n_f):
+        fy = int(f * fh)
+        # междуэтажный карниз
+        pygame.draw.rect(s, trim_c, (0, fy, px_w, 2))
+        pygame.draw.rect(s, _shade(color, 0.78), (0, fy + 2, px_w, 1))
+        if f == n_f - 1 and ground_floor:
+            continue                      # первый этаж — отдельный ритм
+        rows_y = fy + int(fh * 0.22)
+        win_h = max(6, int(fh * 0.52))
+        win_w = max(5, min(11, int(win_h * 0.62)))
+        step = max(win_w + 5, int(win_w * 2.1))
+        margin = (px_w % step) // 2
+        for wx in range(margin, px_w - win_w + 1, step):
+            # сандрик + подоконник
+            pygame.draw.rect(s, trim_c, (wx - 2, rows_y - 3, win_w + 4, 2))
+            pygame.draw.rect(s, trim_c, (wx - 2, rows_y + win_h, win_w + 4, 2))
+            pygame.draw.rect(s, win_c, (wx, rows_y, win_w, win_h))
+            # блик стекла по диагонали
+            gl = _shade(color, 1.5) + (70,)
+            st = pygame.Surface((win_w, win_h), pygame.SRCALPHA)
+            pygame.draw.polygon(st, gl, [(0, win_h), (win_w, 0),
+                                         (win_w, max(2, win_h // 3)),
+                                         (max(2, win_w // 3), win_h)])
+            s.blit(st, (wx, rows_y))
+            pygame.draw.rect(s, frame_c, (wx, rows_y, win_w, win_h), 1)
+            pygame.draw.line(s, frame_c, (wx + win_w // 2, rows_y),
+                             (wx + win_w // 2, rows_y + win_h))
+            if lit_p > 0 and rnd.random() < lit_p:   # жёлтое окно к ночи
+                a = int(235 * lit_p)
+                lg = pygame.Surface((win_w + 6, win_h + 6), pygame.SRCALPHA)
+                pygame.draw.rect(lg, (236, 206, 138, a), (3, 3, win_w, win_h))
+                pygame.draw.rect(lg, (255, 220, 150, a // 4),
+                                 (0, 0, win_w + 6, win_h + 6))
+                s.blit(lg, (wx - 3, rows_y - 3))
+    # ----- первый этаж: руст + витрины
+    if ground_floor:
+        gy = int((n_f - 1) * fh)
+        gh_ = wall_h - gy
+        rust = _shade(color, 0.82)
+        pygame.draw.rect(s, rust, (0, gy, px_w, gh_))
+        for yy in range(gy + 4, wall_h, 6):
+            pygame.draw.line(s, _shade(color, 0.68), (0, yy), (px_w, yy))
+        vw = max(16, min(34, int(gh_ * 1.5)))
+        vh = max(8, gh_ - 10)
+        vx = 4
+        while vx + vw < px_w - 2:
+            pygame.draw.rect(s, (28, 32, 40), (vx, gy + 5, vw, vh))
+            glass = pygame.Surface((vw, vh), pygame.SRCALPHA)
+            pygame.draw.polygon(glass, (150, 170, 190, 60),
+                                [(0, vh), (vw, 0), (vw, vh)])
+            s.blit(glass, (vx, gy + 5))
+            pygame.draw.rect(s, _shade(color, 0.5), (vx, gy + 5, vw, vh), 1)
+            if shop:                     # товар на витрине — цветные полоски
+                for _ in range(3):
+                    cx = vx + rnd.randint(2, max(3, vw - 6))
+                    cy = gy + 5 + rnd.randint(vh // 2, max(vh // 2 + 1, vh - 4))
+                    pygame.draw.rect(s, (rnd.randint(120, 220),
+                                         rnd.randint(70, 160),
+                                         rnd.randint(50, 120)),
+                                     (cx, cy, rnd.randint(3, 7), rnd.randint(2, 4)))
+            vx += vw + 8
+        if shop:                         # вывеска над витринами
+            sw = min(px_w - 6, max(10, 6 * len(shop)))
+            sx = (px_w - sw) // 2
+            pygame.draw.rect(s, (30, 26, 24), (sx, gy + 1, sw, 4))
+            for i in range(sw // 3):
+                pygame.draw.rect(s, (214, 196, 150), (sx + i * 3 + 1, gy + 2, 1, 2))
+    return s
+
+
+def interior_floor(W, H, floor_type="parquet", seed=1):
+    """Тайловая текстура пола интерьера: parquet/wood/tile/linoleum/concrete."""
+    size = 48
+    rnd = _rng(seed)
+    t = pygame.Surface((size, size), pygame.SRCALPHA)
+    if floor_type in ("parquet", "wood"):
+        base = (112, 84, 56) if floor_type == "parquet" else (96, 74, 52)
+        t.fill(_shade(base, rnd.uniform(0.92, 1.05)))
+        plank = size // 4 if floor_type == "parquet" else size // 2
+        for i in range(0, size, plank):
+            c = _shade(base, rnd.uniform(0.8, 1.15))
+            pygame.draw.rect(t, c, (0, i, size, plank - 1))
+            pygame.draw.line(t, _shade(base, 0.6), (0, i), (size, i))
+            for _ in range(3):           # волокна
+                yy = rnd.randrange(i + 1, max(i + 2, i + plank - 1))
+                pygame.draw.line(t, _shade(base, 0.85),
+                                 (rnd.randrange(size // 2), yy),
+                                 (rnd.randrange(size // 2, size), yy))
+        if floor_type == "parquet":      # «ёлочка»: короткая разбивка
+            for i in range(0, size, plank):
+                x0 = rnd.randrange(0, size - 4)
+                pygame.draw.line(t, _shade(base, 0.7), (x0, i), (x0, i + plank - 1))
+    elif floor_type == "tile":           # метлахская плитка
+        a, b = (150, 146, 138), (92, 88, 84)
+        q = size // 2
+        for yy in range(0, size, q):
+            for xx in range(0, size, q):
+                c = a if (xx // q + yy // q) % 2 == 0 else b
+                pygame.draw.rect(t, c, (xx, yy, q, q))
+                pygame.draw.rect(t, _shade(c, 0.75), (xx, yy, q, q), 1)
+        for yy in range(0, size, q):     # роспись по центру плиток
+            for xx in range(0, size, q):
+                pygame.draw.circle(t, _shade(a, 0.9), (xx + q // 2, yy + q // 2), 2)
+    elif floor_type == "linoleum":
+        base = (122, 96, 84)
+        t.fill(base)
+        for _ in range(90):
+            c = _shade(base, rnd.uniform(0.8, 1.2)) + (rnd.randint(30, 120),)
+            pygame.draw.circle(t, c, (rnd.randrange(size), rnd.randrange(size)),
+                               rnd.randint(1, 2))
+        for yy in range(0, size, 16):
+            pygame.draw.line(t, _shade(base, 0.7), (0, yy), (size, yy))
+    else:                                # concrete — бетон подъезда
+        base = (104, 102, 98)
+        t.fill(base)
+        for _ in range(70):
+            c = _shade(base, rnd.uniform(0.85, 1.12)) + (rnd.randint(20, 90),)
+            pygame.draw.circle(t, c, (rnd.randrange(size), rnd.randrange(size)),
+                               rnd.randint(1, 3))
+        for _ in range(3):               # трещины
+            x, y = rnd.randrange(size), rnd.randrange(size)
+            for _ in range(6):
+                nx, ny = x + rnd.randint(-6, 6), y + rnd.randint(-6, 6)
+                pygame.draw.line(t, _shade(base, 0.6), (x, y), (nx, ny))
+                x, y = nx, ny
+    return t
+
+
+def interior_wall_thick(th=10, col=(70, 66, 60), seed=3):
+    """Полоса внутренней стены (перегородки) с побелкой и подтёртостью."""
+    rnd = _rng(seed)
+    s = pygame.Surface((th, th), pygame.SRCALPHA)
+    s.fill(col)
+    for _ in range(14):
+        c = tuple(min(255, max(0, int(v * rnd.uniform(0.8, 1.2)))) for v in col) + \
+            (rnd.randint(20, 90),)
+        pygame.draw.circle(s, c, (rnd.randrange(th), rnd.randrange(th)),
+                           rnd.randint(1, 2))
+    pygame.draw.line(s, _shade(col, 1.25), (0, 0), (th, 0))
+    pygame.draw.line(s, _shade(col, 0.6), (0, th - 1), (th, th - 1))
+    return s
+
+
+def door_sheet_img(w=26, h=34, seed=1):
+    """Фасадная дверь подъезда: филенчатая, тёмная, с косяком."""
+    rnd = _rng(seed)
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(s, (58, 44, 36), (0, 0, w, h))          # полотно
+    pygame.draw.rect(s, (36, 28, 24), (0, 0, w, h), 2)       # обвязка
+    for yy in (int(h * 0.15), int(h * 0.5)):                 # филенки
+        pygame.draw.rect(s, (78, 58, 44), (3, yy, w - 6, int(h * 0.28)))
+        pygame.draw.rect(s, (40, 30, 26), (3, yy, w - 6, int(h * 0.28)), 1)
+    pygame.draw.circle(s, (190, 170, 90), (w - 5, int(h * 0.55)), 2)  # ручка
+    if rnd.random() < 0.5:                                    # табличка
+        pygame.draw.rect(s, (200, 196, 186), (4, 2, w - 10, 3))
+    return s
+
+
 def building_block(px_w, px_h, color=(112, 100, 92), floors=5, style="gable",
-                   seed=1, tower=False):
+                   seed=1, tower=False, facade_h=None, shop=None,
+                   facade_seed=None):
     """Статичная «печать» дома для буфера карты: крыша + объём + детали.
 
     Псевдо-3D сверху: южная стена подсвечена полосой фасада с окнами,
@@ -572,18 +768,14 @@ def building_block(px_w, px_h, color=(112, 100, 92), floors=5, style="gable",
     s = pygame.Surface((px_w + pad_r, px_h + pad_b), pygame.SRCALPHA)
     roof = roof_sheet(px_w, px_h, style, _shade(color, 0.86), seed)
     s.blit(roof, (0, 0))
-    # южная стена (фасад, повёрнутый к «солнцу») — полоса с окнами
-    wall_h = 7 + min(6, floors)
+    # южная стена — полноценный фасад доходного дома: этажи окон, руст,
+    # витрины первого этажа (высота ~ половина глубины корпуса)
+    wall_h = facade_h or max(26, min(int(px_h * 0.55), 20 + 6 * floors))
     wy = px_h
-    pygame.draw.rect(s, _shade(color, 1.06), (0, wy, px_w, wall_h))
+    fac = facade_wall(px_w, wall_h, color=color, floors=floors,
+                      seed=facade_seed or (seed * 7 + 3), shop=shop)
+    s.blit(fac, (0, wy))
     pygame.draw.rect(s, _shade(color, 0.8), (0, wy, px_w, 1))
-    win_w, win_h = 5, max(3, wall_h - 4)
-    step = 13 if px_w > 90 else 11
-    for wx in range(4, px_w - 6, step):
-        lit = rnd.random() < 0.32
-        c = (232, 208, 140) if lit else (44, 50, 60)
-        pygame.draw.rect(s, c, (wx, wy + 2, win_w, win_h))
-        pygame.draw.rect(s, _shade(color, 0.6), (wx, wy + 2, win_w, win_h), 1)
     # восточная стена — в тени
     pygame.draw.rect(s, _shade(color, 0.55), (px_w, 2, pad_r - 2, px_h - 2))
     # парапет с бликом

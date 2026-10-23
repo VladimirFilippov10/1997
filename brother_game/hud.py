@@ -58,8 +58,23 @@ def draw_hud(screen, game):
                H - clock_face.get_height() - 52), size=13,
               color=(170, 176, 186), center=True, bg=(16, 18, 22, 150))
 
+    # --------------------------------------------- подсказка у двери / inside
+    if d.in_level:
+        lvl = d.active_grid()
+        ex, ey = lvl["exit"]
+        if math.hypot(ex - player.x, ey - player.y) < TILE * 1.2:
+            sx, sy = ex - game.camera[0], ey - game.camera[1] - 40
+            draw_text(screen, "[E] выйти на улицу", (sx, sy), size=15,
+                      color=(240, 232, 200), center=True, bg=(16, 18, 22, 180))
+    else:
+        dr = game.near_door()
+        if dr is not None:
+            sx, sy = dr["x"] - game.camera[0], dr["y"] - game.camera[1] - 44
+            draw_text(screen, f"[E] войти: {dr['label']}", (sx, sy), size=15,
+                      color=(240, 232, 200), center=True, bg=(16, 18, 22, 180))
+
     # ------------------------------------------------------- строка подсказок
-    hint = ("WASD — идти · Shift — бежать · E — подобрать · F — использовать · "
+    hint = ("WASD — идти · Shift — бежать · E — подобрать/войти · F — использовать · "
             "Q — выбросить · 1..0 / колесо — слот · Tab — карта · M — звук · Esc — выход")
     draw_text(screen, hint, (W // 2, H - 8), size=14, color=(170, 172, 178), center=True,
               bg=(16, 18, 22, 150))
@@ -99,6 +114,9 @@ def draw_hud(screen, game):
 
 def _draw_minimap(screen, game, big=False):
     d = game.game_district if hasattr(game, "game_district") else game.district
+    if d.in_level:
+        _draw_levelmap(screen, game)
+        return
     W, H = screen.get_size()
     size = MINIMAP_SIZE if big else 140
     pad = 10
@@ -146,4 +164,35 @@ def _draw_minimap(screen, game, big=False):
     screen.blit(mm, rect.topleft)
     label = "КАРТА РАЙОНА (Tab)" if big else "ПЕТЕРБУРГСКАЯ СТОРОНА"
     draw_text(screen, label, (rect.centerx, rect.bottom + 12), size=13,
+              color=(170, 172, 178), center=True)
+
+
+def _draw_levelmap(screen, game):
+    """Мини-план этажа, когда Данила внутри здания."""
+    d = game.district
+    lvl = d.active_grid()
+    W, H = screen.get_size()
+    size = 140
+    pad = 10
+    rect = pygame.Rect(W - size - pad, pad, size, size)
+    bg = pygame.Surface((size + 2 * pad, size + 2 * pad), pygame.SRCALPHA)
+    bg.fill((14, 16, 20, 210))
+    screen.blit(bg, (rect.left - pad, rect.top - pad))
+    scale = size / max(lvl["w"], lvl["h"])
+    mm = pygame.Surface((max(1, int(lvl["w"] * scale)),
+                         max(1, int(lvl["h"] * scale))))
+    mm.fill((92, 78, 58))
+    for (tx, ty) in lvl["blocked"]:
+        pygame.draw.rect(mm, (48, 44, 40),
+                         (int(tx * scale), int(ty * scale),
+                          max(1, int(scale)), max(1, int(scale))))
+    ex, ey = lvl["exit"]
+    pygame.draw.rect(mm, (220, 200, 110),
+                     (int(ex / TILE * scale) - 1, int(ey / TILE * scale) - 1, 3, 3))
+    px = int(game.player.x / TILE * scale)
+    py = int(game.player.y / TILE * scale)
+    pygame.draw.circle(mm, COL_ACCENT, (px, py), 3)
+    mm = pygame.transform.scale(mm, (rect.width, rect.height))
+    screen.blit(mm, rect.topleft)
+    draw_text(screen, lvl["label"], (rect.centerx, rect.bottom + 12), size=13,
               color=(170, 172, 178), center=True)
