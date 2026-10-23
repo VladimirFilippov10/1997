@@ -213,9 +213,11 @@ class Game:
         draw_hud(self.screen, self)
 
     # ---------------------------------------------------------------- main loop
+     # ---------------------------------------------------------------- main loop
     def run(self):
         self.clock = pygame.time.Clock()
-        self.say("Петербургская сторона. Осень.", color=COL_ACCENT, size=26, bold=True, life=4.5)
+        self.say("Петербургская сторона. Осень.", color=COL_ACCENT, size=26,
+                 bold=True, life=4.5)
         while self.running:
             dt = self.clock.tick(FPS) / 1000.0
             dt = min(dt, 0.05)
@@ -234,28 +236,50 @@ class Game:
         pygame.quit()
 
     def on_key(self, key):
-        K = pygame.K
-        if key == K_ESCAPE:
+        if key == pygame.K_ESCAPE:
             self.running = False
-        elif key == K_e:
+        elif key == pygame.K_e:
             self.pick_up()
-        elif key == K_f:
+        elif key == pygame.K_f:
             self.use_selected()
-        elif key == K_g:
+        elif key == pygame.K_g:
             self.drop_selected()
-        elif key == K_TAB:
+        elif key == pygame.K_TAB:
             self.show_map = not self.show_map
-        elif key == K_m:
+        elif key == pygame.K_m:
             self.set_muted(not self.muted)
             self.say("Звук выключен" if self.muted else "Звук включён",
                      color=(180, 180, 180))
-        elif K_1 <= key <= K_9:
-            self.inventory.select(key - K_1)
-        elif key == K_0:
+        elif pygame.K_1 <= key <= pygame.K_9:
+            self.inventory.select(key - pygame.K_1)
+        elif key == pygame.K_0:
             self.inventory.select(9 % len(self.inventory.slots))
-        elif key == K_F3:
+        elif key == pygame.K_F3:
             self.toggle_debug()
 
+    def toggle_debug(self):
+        self.debug = not getattr(self, "debug", False)
+def on_key(self, key):
+    if key == pygame.K_ESCAPE:
+        self.running = False
+    elif key == pygame.K_e:
+        self.pick_up()
+    elif key == pygame.K_f:
+        self.use_selected()
+    elif key == pygame.K_g:
+        self.drop_selected()
+    elif key == pygame.K_TAB:
+        self.show_map = not self.show_map
+    elif key == pygame.K_m:
+        self.set_muted(not self.muted)
+        self.say("Звук выключен" if self.muted else "Звук включён",
+                 color=(180, 180, 180))
+    elif pygame.K_1 <= key <= pygame.K_9:
+        self.inventory.select(key - pygame.K_1)
+    elif key == pygame.K_0:
+        self.inventory.select(9 % len(self.inventory.slots))
+    elif key == pygame.K_F3:
+        self.toggle_debug()
     def toggle_debug(self):
         self.debug = not getattr(self, "debug", False)
 
