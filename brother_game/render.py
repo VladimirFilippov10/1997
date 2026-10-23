@@ -593,6 +593,8 @@ class Renderer:
         # ---- ночь: темнота с «дырами» света
         if self.night > 0.02:
             self._draw_night(lights)
+        # ---- подкраска кадра по фазе суток (рассвет/закат/ночь)
+        self._sky_tint_overlay()
 
         # ---- F3: подсветка невидимых стен (blocked-клетки без видимой графики)
         if getattr(self, "show_walls", False):
@@ -676,6 +678,213 @@ class Renderer:
                 pygame.draw.circle(vig, (12, 14, 18, a), (cx, cy), r, step)
             self._vig = vig
         self.screen.blit(self._vig, (0, 0))
+
+    def _sky_tint_overlay(self):
+        """Подкраска кадра по фазе суток (game writes renderer.sky_tint)."""
+        tint, alpha = getattr(self, "sky_tint", ((255, 255, 255), 0))
+        if alpha <= 0:
+            return
+        key = (tint, alpha)
+        ov = getattr(self, "_sky_tint_img", None)
+        ovk = getattr(self, "_sky_tint_key", None)
+        if ov is None or ovk != key:
+            ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+            ov.fill((tint[0], tint[1], tint[2], alpha))
+            self._sky_tint_img = ov
+            self._sky_tint_key = key
+        self.screen.blit(ov, (0, 0))
+
+
+# ------------------------------------------------------------- CASIO-часы
+def segment_surface(seg_w, seg_h, on_color, off_color):
+    """Один «сегмент» семисегментного индикатора: вытянутая трапеция."""
+    s = pygame.Surface((seg_w, seg_h), pygame.SRCALPHA)
+    inset = max(1, seg_h // 3)
+    pts = [(inset, 0), (seg_w - inset, 0), (seg_w, seg_h / 2),
+           (seg_w - inset, seg_h), (inset, seg_h), (0, seg_h / 2)]
+    pygame.draw.polygon(s, on_color, pts)
+    return s
+
+
+class CasioClock:
+    """Цифровые часы в стиле CASIO (как у Багрова на запястье):
+    тёмный прямоугольный корпус, зелёное ЖK-окно, крупные сегментные
+    цифры ЧЧ:ММ:СС, тонкие подписи дней недели сверху."""
+
+    # карта сегментов цифр: a..g (стандартная семисегментная нумерация)
+    DIGIT_MAP = {
+        "0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd",
+        "4": "fgbc", "5": "afgcd", "6": "afgecd", "7": "abc",
+        "8": "abcdefg", "9": "abcdfg", "-": "g", " ": "",
+    }
+    DAYS = ("ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС")
+
+    def __init__(self, scale=1.0):
+        self.scale = scale
+        self.on_color = (150, 235, 170)          # холодный ЖК-зелёный
+        self.off_color = (34, 58, 42)            # «погасшие» сегменты
+        self.glass = (16, 30, 22)
+        self.build()
+
+    # ------------------------------------------------------------------ сборка
+    def build(self):
+        sc = self.scale
+        self.digit_w = max(8, int(22 * sc))
+        self.digit_h = max(16, int(40 * sc))
+        th = max(3, int(6 * sc))                 # толщина сегмента
+        vlen = int((self.digit_h - 3 * th) / 2)  # длина вертикального
+        hlen = self.digit_w - 2 * th             # длина горизонтального
+        self.seg_v = segment_surface(th, vlen, self.on_color, self.on_color)
+        self.seg_h = segment_surface(hlen, th, self.on_color, self.on_color)
+        self.seg_v_off = segment_surface(th, vlen, self.off_color, self.off_color)
+        self.seg_h_off = segment_surface(hlen, th, self.off_color, self.off_color)
+
+        self.win_pad = (int(14 * sc), int(10 * sc))
+        gap = max(3, int(8 * sc))                # межцифровой интервал
+        colon_w = max(5, int(10 * sc))
+        n_digits = 6                              # ЧЧ:ММ:СС
+        self.win_w = n_digits * self.digit_w + 2 * gap + 2 * colon_w \
+            + int(10 * sc)
+        self.win_h = self.digit_h + int(12 * sc)
+        top_band = max(10, int(14 * sc))         # полоса «CASIO / дни недели»
+        frame = max(4, int(8 * sc))              # рамка корпуса
+        self.body = pygame.Surface(
+            (self.win_w + 2 * self.win_pad[0] + 2 * frame,
+             self.win_h + 2 * self.win_pad[1] + 2 * frame + top_band),
+            pygame.SRCALPHA)
+        bw, bh = self.body.get_size()
+        # корпус — тёмный пластик с лёгким градиентом и бликом
+        for yy in range(bh):
+            k = 0.75 + 0.5 * (1 - yy / max(1, bh - 1))
+            c = tuple(min(255, int(v * k)) for v in (52, 54, 60))
+            pygame.draw.line(self.body, c, (0, yy), (bw - 1, yy))
+        pygame.draw.rect(self.body, (26, 27, 30), (0, 0, bw, bh),
+                         max(1, int(2 * sc)), border_radius=int(8 * sc))
+        # стеклянное окно
+        wx, wy = frame + self.win_pad[0], frame + top_band + self.win_pad[1]
+        glass = pygame.Surface((self.win_w, self.win_h), pygame.SRCALPHA)
+        glass.fill((*self.glass, 255))
+        pygame.draw.rect(glass, (8, 14, 10), (0, 0, self.win_w, self.win_h),
+                         max(1, int(2 * sc)))
+        self.body.blit(glass, (wx, wy))
+        self.win_pos = (wx, wy)
+        # надписи: CASIO слева, дни недели справа
+        f_big = get_font(max(8, int(11 * sc)), bold=True)
+        f_sm = get_font(max(6, int(8 * sc)))
+        brand = f_big.render("CASIO", True, (214, 216, 220))
+        self.body.blit(brand, (frame + int(6 * sc),
+                               frame + (top_band - brand.get_height()) // 2))
+        days_x = bw - frame - int(6 * sc)
+        for ab in reversed(self.DAYS):
+            d_img = f_sm.render(ab, True, (150, 152, 158))
+            days_x -= d_img.get_width() + int(3 * sc)
+            self.body.blit(d_img, (days_x,
+                                   frame + (top_band - d_img.get_height()) // 2))
+        #Precompute digit layouts
+        self._digit_cache = {}
+        self._colon_img = self._make_colon()
+        self._dim_colon_img = self._make_dim_colon()
+
+    def _make_colon(self):
+        sc = self.scale
+        w = max(5, int(10 * sc))
+        s = pygame.Surface((w, self.digit_h), pygame.SRCALPHA)
+        r = max(1, int(2.6 * sc))
+        for yy in (self.digit_h * 0.3, self.digit_h * 0.7):
+            pygame.draw.circle(s, self.on_color, (w // 2, int(yy)), r)
+        return s
+
+    def _make_dim_colon(self):
+        """Тот же двоичный разделитель, но «погасший» (для мигания ~2 Гц)."""
+        sc = self.scale
+        w = max(5, int(10 * sc))
+        s = pygame.Surface((w, self.digit_h), pygame.SRCALPHA)
+        r = max(1, int(2.6 * sc))
+        dim = tuple(int(c * 0.22) for c in self.on_color)
+        for yy in (self.digit_h * 0.3, self.digit_h * 0.7):
+            pygame.draw.circle(s, dim, (w // 2, int(yy)), r)
+        return s
+
+    # ------------------------------------------------------------------ логика
+    @staticmethod
+    def time_string(time_of_day):
+        t = time_of_day % 24.0
+        hh = int(t)
+        mm = int((t - hh) * 60)
+        ss = int(round(((t - hh) * 60 - mm) * 60))
+        if ss >= 60:
+            ss, mm = 0, mm + 1
+        if mm >= 60:
+            mm, hh = 0, (hh + 1) % 24
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    def _draw_digit(self, target, x, y, ch):
+        """Рисуем одну цифру: все 7 позиций, «лишние» сегменты погашены."""
+        lit = self.DIGIT_MAP.get(ch, "")
+        th = max(3, int(6 * self.scale))
+        half_v = (self.digit_h - 3 * th) // 2
+        pos = {
+            "a": (x + th, y, "h"),
+            "b": (x + self.digit_w - th, y + th, "v"),
+            "c": (x + self.digit_w - th, y + 2 * th + half_v, "v"),
+            "d": (x + th, y + self.digit_h - th, "h"),
+            "e": (x, y + 2 * th + half_v, "v"),
+            "f": (x, y + th, "v"),
+            "g": (x + th, y + (self.digit_h - th) // 2, "h"),
+        }
+        for name, (sx, sy, orient) in pos.items():
+            if orient == "h":
+                img = self.seg_h if name in lit else self.seg_h_off
+            else:
+                img = self.seg_v if name in lit else self.seg_v_off
+            target.blit(img, (sx, sy))
+
+    def render_face(self, time_of_day):
+        """Поверхность часов с текущим игровым временем (мигает «:»)."""
+        ts = self.time_string(time_of_day)
+        blink = (int(time_of_day * 2) % 2) == 0   # двоеточие мигает ~2 Гц
+        key = (ts, blink)
+        face = self._digit_cache.get(key)
+        if face is None:
+            face = self.body.copy()
+            wx, wy = self.win_pos
+            x = wx + int(5 * self.scale)
+            y = wy + int(6 * self.scale)
+            gap = max(3, int(8 * self.scale))
+            for ch in ts:
+                if ch == ":":
+                    img = self._colon_img if blink else self._dim_colon_img
+                    face.blit(img, (x, y))
+                    x += self._colon_img.get_width() + gap
+                else:
+                    self._draw_digit(face, x, y, ch)
+                    x += self.digit_w + gap
+            if len(self._digit_cache) > 4800:
+                self._digit_cache.clear()
+            self._digit_cache[key] = face
+        return face
+
+
+_CLOCK_INSTANCE = None
+
+
+def draw_casio_clock(screen, time_of_day, pos=None, scale=1.0):
+    """Рисует CASIO-часы в углу экрана (по умолчанию — правый нижний)."""
+    global _CLOCK_INSTANCE
+    if _CLOCK_INSTANCE is None or abs(_CLOCK_INSTANCE.scale - scale) > 1e-6:
+        _CLOCK_INSTANCE = CasioClock(scale=scale)
+    face = _CLOCK_INSTANCE.render_face(time_of_day)
+    W, H = screen.get_size()
+    if pos is None:
+        pos = (W - face.get_width() - 14, H - face.get_height() - 46)
+    shadow = pygame.Surface((face.get_width() + 6, face.get_height() + 6),
+                            pygame.SRCALPHA)
+    pygame.draw.rect(shadow, (0, 0, 0, 90), (3, 3, face.get_width(),
+                                             face.get_height()),
+                     border_radius=8)
+    screen.blit(shadow, pos)
+    screen.blit(face, pos)
+    return face
 
 
 # ---------------------------------------------------------------- шрифты

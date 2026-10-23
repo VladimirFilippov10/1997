@@ -6,7 +6,7 @@ import pygame
 
 from config import COL_ACCENT, COL_TEXT, MINIMAP_SIZE, TILE
 from inventory import draw_hotbar
-from render import draw_text
+from render import draw_casio_clock, draw_text
 
 
 def draw_hud(screen, game):
@@ -44,6 +44,19 @@ def draw_hud(screen, game):
     draw_hotbar(screen, inv, lambda s, t, p, size=16, color=COL_TEXT, bold=False: draw_text(
         s, t, p, size=size, color=color, bold=bold), game.item_icons,
         game.hotbar_frames)
+
+    # ------------------------------------------- CASIO-часы (игровое время)
+    tod = getattr(game, "time_of_day", 12.0)
+    clock_face = draw_casio_clock(screen, tod, scale=0.9)
+    hh = int(tod) % 24
+    phase = ("ночь" if (hh >= 21 or hh < 5) else
+             "утро" if hh < 8 else "день" if hh < 17 else "вечер")
+    wname = {"clear": "ясно", "drizzle": "морось", "rain": "дождь"}.get(
+        getattr(game, "weather_mode", "clear"), "")
+    draw_text(screen, f"{phase} · {wname} · N — перемотка, T — погода",
+              (W - clock_face.get_width() // 2 - 14,
+               H - clock_face.get_height() - 52), size=13,
+              color=(170, 176, 186), center=True, bg=(16, 18, 22, 150))
 
     # ------------------------------------------------------- строка подсказок
     hint = ("WASD — идти · Shift — бежать · E — подобрать · F — использовать · "
