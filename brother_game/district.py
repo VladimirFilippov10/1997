@@ -298,7 +298,30 @@ class District:
                 best, bd = d, dist
         return best
 
-    def add_prop(self, kind, px, py, solid=True, radius=10, **kw):
+    def add_prop(self, *args, **kw):
+        """kind можно передать позично ИЛИ как kwarg kind=... — Python иначе
+        падает с 'multiple values for argument kind'. Kwarg kind у машин
+        означает модель кузова: если позиционный kind уже задан, kwarg
+        едет в p["model"]."""
+        a = list(args)
+        while len(a) < 3:
+            a.append(None)
+        kind, px, py = a[0], a[1], a[2]
+        if len(args) > 3:
+            solid = args[3]
+        else:
+            solid = kw.pop("solid", True)
+        if len(args) > 4:
+            radius = args[4]
+        else:
+            radius = kw.pop("radius", 10)
+        kw.pop("px", None); kw.pop("py", None)
+        k2 = kw.pop("kind", None)
+        if k2 is not None:
+            if kind is None:
+                kind = k2
+            elif k2 != kind:
+                kw["model"] = k2
         p = {"t": kind, "x": px, "y": py, "solid": solid, "r": radius}
         p.update(kw)
         self.props.append(p)

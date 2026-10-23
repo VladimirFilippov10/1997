@@ -70,6 +70,9 @@ class Renderer:
             "puddle": T.puddle(size, 11),
             "crosswalk": T.crosswalk(size),
             "track": self._track_tile(size),
+            "trench": T.trench_tile(3),
+            "grate": T.grate_tile(5),
+            "steps": T.steps_tile(7),
         }
         self.stains = []
         for s in range(6):
@@ -184,7 +187,8 @@ class Renderer:
     def _get_prop_img(self, p):
         t = p["t"]
         if t == "car":
-            return self._get_car(p.get("kind", "sedan"), p.get("color", (90, 96, 110)),
+            return self._get_car(p.get("model", p.get("kind", "vaz2101")),
+                                 p.get("color", (90, 96, 110)),
                                  p.get("seed", 1), parked=True)[0]
         key = (t, p.get("angle", 0), p.get("color"), p.get("seed", 0), p.get("size"))
         img = self._prop_cache.get(key)
@@ -206,6 +210,18 @@ class Renderer:
             img = T.kiosk(p.get("seed", 1))
         elif t == "garage":
             img = T.garage(p.get("seed", 1))
+        elif t == "stall":
+            img = T.stall(p.get("seed", 1), p.get("model") or "metal")
+        elif t == "phonebox":
+            img = T.phonebox(p.get("seed", 1))
+        elif t == "arcade":
+            img = T.arcade(p.get("seed", 1))
+        elif t == "bin":
+            img = T.dumpster(p.get("seed", 1))
+        elif t == "clothesline":
+            img = T.clothesline(p.get("seed", 1))
+        elif t == "bare_tree":
+            img = T.bare_tree(p.get("seed", 1))
         else:
             img = pygame.Surface((10, 10), pygame.SRCALPHA)
         self._prop_cache[key] = img
@@ -224,13 +240,22 @@ class Renderer:
         key = (kind, color, seed, parked)
         hit = self._car_cache.get(key)
         if hit is None:
-            frames = T.make_car_frames(kind, color, seed)
+            import cars as C
+            legacy = {"sedan": "vaz2101", "van": "vaz2109",
+                      "bus": "bmwe34", "truck": "vaz2101"}
+            m = C.CAR_MODELS.get(kind) and kind or legacy.get(kind, "vaz2101")
+            try:
+                frames = C.make_model_frames(m, color, seed)
+                hl = C.car_headlights(m, color)
+            except Exception:
+                frames = T.make_car_frames(legacy.get(kind, "sedan"), color, seed)
+                hl = T.car_headlights(color, legacy.get(kind, "sedan"))
             still = frames[(0, False, 0, 0)]
             mv = {}
             for phase in range(4):
                 for blink in (0, 1):
                     mv[(phase, blink)] = frames[(0, True, phase, blink)]
-            hit = (still, mv, T.car_headlights(color, kind))
+            hit = (still, mv, hl)
             self._car_cache[key] = hit
         return hit
 
@@ -345,7 +370,7 @@ class Renderer:
                     pass   # припаркованные без света
             elif kind == "mover":
                 m = obj
-                still, mv, hl = self._get_car(m.get("kind", "sedan"),
+                still, mv, hl = self._get_car(m.get("model", m.get("kind", "sedan")),
                                               m.get("color", (90, 96, 110)),
                                               m.get("seed", 1))
                 phase = int(m.get("wheel", 0)) % 4
@@ -510,7 +535,28 @@ def get_font(size, bold=False):
         try:
             f = pygame.font.SysFont("dejavusans,liberation,freesans,arial", size, bold=bold)
         except Exception:
-            f = pygame.font.Font(None, size)
+            try:
+                f = pygame.font.Font(None, size)
+            except Exception:
+                # в среде без шрифтов (например, CI/headless-контейнер) —
+                # заглушка, рисующая пустые изображения заданного размера
+                class _NoFont:
+                    def render(self, text, aa=False, color=(0, 0, 0)):
+                        h = max(8, int(size * 1.2))
+                        s = pygame.Surface((max(1, 7 * len(str(text))), h),
+                                           pygame.SRCALPHA)
+                        return s
+
+                    def size(self, text):
+                        return (max(1, 7 * len(str(text))), max(8, int(size * 1.2)))
+
+                    def get_height(self):
+                        return max(8, int(size * 1.2))
+
+                    def get_ascent(self):
+                        return max(6, int(size * 0.9))
+
+                f = _NoFont()
         _FONT_CACHE[key] = f
     return f
 

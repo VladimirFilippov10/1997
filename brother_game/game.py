@@ -73,11 +73,20 @@ class Game:
         self.hotbar_frames = (T.hotbar_frame(52, False), T.hotbar_frame(52, True))
 
         # ---- звук
-        (self.audio, self.step_sounds, self.wind, self.city,
-         self.click) = build_audio()
+        self.audio, snd = build_audio()
+        self.sfx = snd  # полный словарь синтезированных звуков
+        self.step_sounds = {k: v for k, v in snd.items()
+                            if k in ("asphalt", "concrete", "grass", "brick", "wood")}
+        self.wind = snd.get("wind")
+        self.city = snd.get("city")
+        self.click = snd.get("click")
         if self.audio.ok:
             self.audio.play(self.wind, loops=-1, volume=0.5)
             self.audio.play(self.city, loops=-1, volume=0.35)
+            rain_sfx = snd.get("rain")
+            if rain_sfx is not None:
+                self.audio.play(rain_sfx, loops=-1, volume=0.0)
+                self._rain_channel = True
 
         self._held_printed = False
 
