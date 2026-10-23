@@ -38,6 +38,12 @@ SURFACE_SOUND = {
     G_WATER: "grass",     # на воде шагов нет — тишина/бульк позже
 }
 
+# покрытия внутри зданий -> звук шагов
+INTERIOR_SOUND = {
+    "parquet": "wood", "wood": "wood", "linoleum": "concrete",
+    "tile": "concrete", "concrete": "concrete", "carpet": "grass",
+}
+
 
 class District:
     """Карта района: сетка земли + списки объектов."""
@@ -158,6 +164,77 @@ class District:
         self.interiors[key] = lvl
         return lvl
 
+    def add_building_interior(self, wall, W=None, H=None, floor_type=G_CONCRETE,
+                              label="ПОДЪЕЗД", rooms=None, corridors=None,
+                              items=None, npcs=None, props=None, shop_cells=None,
+                              door_side="south"):
+        """Интерьер, повторяющий план дома-прямоугольника (wall из add_wall_block).
+
+        Стены дома становятся стенами уровня; внутри — дворовая/парадная
+        планировка: перегородки (rooms), магазины на 1-м этаже (shop_cells),
+        предметы и NPC. Дверь — с выбранной стороны фасада.
+        Возвращает dict уровня (ключ "key" = id интерьера).
+        """
+        key = f"bld_{wall['x']}_{wall['y']}"
+        W = W or wall["w"]
+        H = H or wall["h"]
+        s = set()
+        for x in range(W):                      # периметр = наружные стены
+            s.add((x, 0)); s.add((x, H - 1))
+        for y in range(H):
+            s.add((0, y)); s.add((W - 1, y))
+        for r in (rooms or []):                 # внутренние перегородки
+            rx, ry, rw, rh = r
+            for x in range(rx, min(W, rx + rw)):
+                for y in range(ry, min(H, ry + rh)):
+                    s.add((x, y))
+        # двери комнат — вырезаем проёмы рядом с каждой комнатой
+        for p in getattr(self, "_room_doors", []):
+            pass
+        dx, dy = None, None
+        if door_side == "south":
+            dx, dy = W // 2, H - 1
+        elif door_side == "north":
+            dx, dy = W // 2, 0
+        elif door_side == "west":
+            dx, dy = 0, H // 2
+        else:
+            dx, dy = W - 1, H // 2
+        s.discard((dx, dy))
+        if door_side in ("south", "north"):
+            s.discard((dx - 1, dy)); s.discard((dx + 1, dy))
+        else:
+            s.discard((dx, dy - 1)); s.discard((dx, dy + 1))
+        exit_px = (dx * TILE + TILE // 2, dy * TILE + TILE // 2)
+        spawn = ((W // 2) * TILE + TILE // 2, max(1, H - 2) * TILE + TILE // 2)
+        lvl = {"key": key, "label": label, "w": W, "h": H, "blocked": s,
+               "floor": floor_type, "spawn": spawn, "exit": exit_px,
+               "items": [], "npcs": [], "props": [],
+               "wall": (wall["x"], wall["y"], W, H),
+               "facade": wall.get("color", (110, 104, 98)),
+               "floors_n": wall.get("floors", 5),
+               "shops": list(shop_cells or []), "kind": "building"}
+        for it in (items or []):
+            lvl["items"].append({"name": it[0], "label": it[1],
+                                 "x": it[2] * TILE + TILE // 2,
+                                 "y": it[3] * TILE + TILE // 2, "taken": False})
+        for n in (npcs or []):
+            ax, ay = n[0] * TILE + TILE // 2, n[1] * TILE + TILE // 2
+            bx, by = n[2] * TILE + TILE // 2, n[3] * TILE + TILE // 2
+            lvl["npcs"].append({
+                "x": ax, "y": ay, "a": (ax, ay), "b": (bx, by),
+                "r": 11, "jacket": n[4] if len(n) > 4 else (88, 84, 80),
+                "speed": self.rnd.uniform(28, 52), "phase": self.rnd.random(),
+                "dir": 1, "facing": 0.0, "walk_t": self.rnd.uniform(0, 6.28)})
+        for pr in (props or []):
+            d = {"t": pr[0], "x": pr[1] * TILE + TILE // 2,
+                 "y": pr[2] * TILE + TILE // 2, "solid": True,
+                 "r": pr[3] if len(pr) > 3 else 12}
+            lvl["props"].append(d)
+        self.interiors[key] = lvl
+        wall["interior"] = key
+        return lvl
+
     def build_doors(self):
         """После построения района: проходимые арки/подъезды в домах с
         интерьерами + разблокировка клетки двери."""
@@ -176,6 +253,41 @@ class District:
             # плоская деталь: крыльцо/арка видна на карте
             self.flat.append({"t": "porch", "x": tx, "y": ty,
                               "seed": self.rnd.randrange(99)})
+
+    def add_door(self, wx, wy, level_key, label=None, side="south"):
+        """Дверь дома (bx,by — левый верхний тайл корпуса) в интерьер level_key.
+
+        Клетка фасада разблокируется; рядом рисуются гранитные ступени.
+        """
+        wall = None
+        for w in self.walls:
+            if w["x"] == wx and w["y"] == wy:
+                wall = w
+                break
+        if wall is None or level_key not in self.interiors:
+            return None
+        wall["interior"] = level_key
+        if side == "south":
+            tx, ty = wall["x"] + wall["w"] // 2, wall["y"] + wall["h"] - 1
+            px, py = tx * TILE + TILE // 2, ty * TILE + TILE - 6
+        elif side == "north":
+            tx, ty = wall["x"] + wall["w"] // 2, wall["y"]
+            px, py = tx * TILE + TILE // 2, ty * TILE + 6
+        else:  # западная/восточная стена
+            ty_ = wall["y"] + wall["h"] // 2
+            if side == "west":
+                tx, ty = wall["x"], ty_
+                px, py = tx * TILE + 6, ty * TILE + TILE // 2
+            else:
+                tx, ty = wall["x"] + wall["w"] - 1, ty_
+                px, py = tx * TILE + TILE - 6, ty * TILE + TILE // 2
+        self.blocked.discard((tx, ty))
+        d = {"x": px, "y": py, "r": TILE * 0.8, "level": level_key,
+             "label": label or self.interiors[level_key]["label"]}
+        self.doors.append(d)
+        self.flat.append({"t": "steps", "x": tx, "y": ty,
+                          "seed": self.rnd.randrange(99)})
+        return d
 
     def level_at_px(self, px, py):
         """Рядом с дверью? Возвращает dict двери или None."""
@@ -611,6 +723,9 @@ class District:
         return self.ground[ty][tx]
 
     def surface_sound(self, px, py):
+        lvl = self.active_grid()
+        if lvl is not None:
+            return INTERIOR_SOUND.get(lvl["floor"], "concrete")
         return SURFACE_SOUND.get(self.ground_at_px(px, py), "asphalt")
 
     def circle_blocked(self, px, py, r):

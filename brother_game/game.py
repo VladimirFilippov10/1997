@@ -9,6 +9,7 @@ import textures as T
 from audio import build_audio
 from config import (FPS, RUN_SPEED, TILE, WINDOW_H, WINDOW_W, COL_ACCENT)
 from district import build_district
+from lomnoshin import build_lomonosov
 from hud import draw_hud
 from inventory import Inventory, Item
 from player import Player, WalkerNPC
@@ -41,8 +42,15 @@ class Game:
         self.muted = False
         self.rnd = random.Random(11)
 
-        # ---- мир
-        self.district = build_district(seed=7)
+        # ---- мир: квартал улицы Ломоносова (историческая схема «Пяти углов»);
+        # при любой ошибке — откат на процедурный район Петербургской стороны
+        try:
+            self.district = build_lomonosov(seed=1997)
+        except Exception as exc:      # pragma: no cover
+            import traceback
+            traceback.print_exc()
+            print("[warn] Ломоносов не построился:", exc)
+            self.district = build_district(seed=7)
         self.player = Player(self.district.spawn[0], self.district.spawn[1], self.district)
         self.walkers = [WalkerNPC(n) for n in self.district.npcs]
         self.inventory = Inventory()
