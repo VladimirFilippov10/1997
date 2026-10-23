@@ -58,8 +58,40 @@ class District:
         self.vents = []     # точки теплотрассы, из которых валит пар
         self.zones = []     # подписи мест {label,x,y}
         self.blocked = set()  # (tx,ty) — непроходимые клетки
+        self.interiors = {}   # key -> dict уровня внутри здания
+        self.doors = []       # {x,y,r,level,label} — входы в здания
         self.water_y = None
         self.spawn = (14 * TILE, 30 * TILE)
+
+    # --------------------------------------------------- текущий уровень
+    def active_grid(self):
+        """None = улица; иначе dict интерьера (своя сетка blocked)."""
+        return getattr(self, "_level", None)
+
+    def enter_level(self, key):
+        self._level = self.interiors[key] if key else None
+
+    @property
+    def in_level(self):
+        lvl = self.active_grid()
+        return lvl is not None
+
+    def level_blocked(self, lvl, tx, ty):
+        if tx < 0 or ty < 0 or tx >= lvl["w"] or ty >= lvl["h"]:
+            return True
+        return (tx, ty) in lvl["blocked"]
+
+    def circle_blocked_level(self, lvl, px, py, r):
+        x0 = int((px - r) // TILE); x1 = int((px + r) // TILE)
+        y0 = int((py - r) // TILE); y1 = int((py + r) // TILE)
+        for ty in range(y0, y1 + 1):
+            for tx in range(x0, x1 + 1):
+                if self.level_blocked(lvl, tx, ty):
+                    cx = max(tx * TILE, min(px, tx * TILE + TILE))
+                    cy = max(ty * TILE, min(py, ty * TILE + TILE))
+                    if (cx - px) ** 2 + (cy - py) ** 2 < r * r:
+                        return True
+        return False
 
     # ----------------------------------------------------------- helpers
     def fill_ground(self, x0, y0, x1, y1, t):
@@ -74,20 +106,85 @@ class District:
             return True
         return (tx, ty) in self.blocked
 
-    def add_wall_block(self, x, y, w, h, color=None, floors=5):
+    def add_wall_block(self, x, y, w, h, color=None, floors=5, interior=None):
         rnd = self.rnd
         style = rnd.choice(("gable", "gable", "mansard", "hip", "flat", "monitor"))
         tower = (w >= 3 and h >= 2 and rnd.random() < 0.18)
-        self.walls.append({"x": x, "y": y, "w": w, "h": h,
-                           "color": color or (92, 88, 84), "floors": floors,
-                           "style": style, "tower": tower,
-                           "seed": rnd.randrange(1 << 20)})
-        for ty in range(y, y + h):
-            for tx in range(x, x + w):
-                if 0 <= tx < self.w and 0 <= ty < self.h:
-                    self.blocked.add((tx, ty))
-        # окна подъездов во двор + козырьки (плоские детали)
-        return self.walls[-1]
+        wall = {"x": x, "y": y, "w": w, "h": h,
+                "color": color or (92, 88, 84), "floors": floors,
+                "style": style, "tower": tower,
+                "seed": rnd.randrange(1 << 20),
+                "interior": interior}          # dict уровня или None
+        self.walls.append(wall)
+        if interior is None:                   # глухой дом — непроходим целиком
+            for ty in range(y, y + h):
+                for tx in range(x, x + w):
+                    if 0 <= tx < self.w and 0 <= ty < self.h:
+                        self.blocked.add((tx, ty))
+        return wall
+
+    # ------------------------------------------------------- интерьеры (уровни)
+    def add_interior(self, key, W, H, walls_tiles, floor_type=G_CONCRETE,
+                     spawn_tx=0, spawn_ty=0, exit_tx=None, exit_ty=None,
+                     items=None, npcs=None, label="ПОДЪЕЗД"):
+        """Отдельный «уровень» внутри здания: своя мини-сетка коллизий.
+
+        walls_tiles — множество (tx,ty) непроходимых клеток;
+        exit_*      — клетка двери (по умолчанию — середина южной стены).
+        Возвращает dict уровня.
+        """
+        lvl = {
+            "key": key, "label": label, "w": W, "h": H,
+            "blocked": set(walls_tiles), "floor": floor_type,
+            "spawn": (spawn_tx * TILE + TILE // 2, spawn_ty * TILE + TILE // 2),
+            "exit": ((exit_tx if exit_tx is not None else W // 2) * TILE + TILE // 2,
+                     ((H - 1) if exit_ty is None else exit_ty) * TILE + TILE // 2),
+            "items": [], "npcs": [],
+            "props": [],
+        }
+        for it in (items or []):
+            lvl["items"].append({"name": it[0], "label": it[1],
+                                 "x": it[2] * TILE + TILE // 2,
+                                 "y": it[3] * TILE + TILE // 2, "taken": False})
+        for n in (npcs or []):
+            ax, ay = n[0] * TILE + TILE // 2, n[1] * TILE + TILE // 2
+            bx, by = n[2] * TILE + TILE // 2, n[3] * TILE + TILE // 2
+            lvl["npcs"].append({
+                "x": ax, "y": ay, "a": (ax, ay), "b": (bx, by),
+                "r": 11, "jacket": n[4] if len(n) > 4 else (88, 84, 80),
+                "speed": self.rnd.uniform(30, 55), "phase": self.rnd.random(),
+                "dir": 1, "facing": 0.0, "walk_t": self.rnd.uniform(0, 6.28),
+            })
+        self.interiors[key] = lvl
+        return lvl
+
+    def build_doors(self):
+        """После построения района: проходимые арки/подъезды в домах с
+        интерьерами + разблокировка клетки двери."""
+        for w in self.walls:
+            it = w.get("interior")
+            if not it:
+                continue
+            lvl = self.interiors[it]
+            ex, ey = lvl["exit"]
+            tx, ty = int(ex // TILE), int(ey // TILE)
+            # дверь — на южном фасаде дома (или заданная клетка)
+            self.blocked.discard((tx, ty))
+            self.blocked.discard((tx, ty - 1))
+            self.doors.append({"x": ex, "y": ey, "r": TILE * 0.75,
+                               "level": it, "label": lvl["label"]})
+            # плоская деталь: крыльцо/арка видна на карте
+            self.flat.append({"t": "porch", "x": tx, "y": ty,
+                              "seed": self.rnd.randrange(99)})
+
+    def level_at_px(self, px, py):
+        """Рядом с дверью? Возвращает dict двери или None."""
+        best, bd = None, 1e9
+        for d in self.doors:
+            dist = math.hypot(d["x"] - px, d["y"] - py)
+            if dist < d["r"] and dist < bd:
+                best, bd = d, dist
+        return best
 
     def add_prop(self, kind, px, py, solid=True, radius=10, **kw):
         p = {"t": kind, "x": px, "y": py, "solid": solid, "r": radius}
@@ -99,20 +196,73 @@ class District:
         return p
 
     def add_car(self, px, py, color=None, angle=0, kind=None, seed=None,
-                solid=True, parked=False):
-        """Автомобиль: 4 кузова × палитра «питерского двора»."""
+                solid=True, parked=False, model=None):
+        """Автомобиль: исторический автопарк 1997 (ВАЗ-2101, ВАЗ-2109, BMW E34)
+        плюс «фон» из фургонов/автобусов/грузовиков того времени."""
         rnd = self.rnd
-        colors = [(90, 96, 110), (120, 60, 52), (70, 84, 70), (110, 108, 96),
-                  (60, 62, 66), (130, 110, 70), (86, 70, 100), (140, 132, 110),
-                  (58, 74, 96), (150, 148, 140)]
-        kinds = ("sedan", "sedan", "sedan", "van", "bus", "truck")
-        c = color or rnd.choice(colors)
-        k = kind or rnd.choice(kinds)
+        from cars import CAR_MODELS, random_color as rnd_color
+        hist_models = ("vaz2101", "vaz2109", "bmwe34")
+        if kind in (None, "sedan"):
+            k = rnd.choice(hist_models)
+        else:
+            k = kind
+        if model:
+            k = model
+        c = color or (rnd_color(k, rnd) if k in CAR_MODELS
+                      else rnd.choice([(150, 140, 120), (120, 130, 150),
+                                       (176, 158, 60), (90, 96, 110)]))
         p = self.add_prop("car", px, py, solid=solid, radius=13,
                           color=c, angle=angle, kind=k,
                           seed=seed if seed is not None else rnd.randrange(999),
                           parked=parked)
         return p
+
+    def car_spot_free(self, px, py):
+        """Свободно ли место под машину (не стена/вода/другая машина)."""
+        tx, ty = int(px // TILE), int(py // TILE)
+        if self.is_solid_tile(tx, ty):
+            return False
+        for p in self.props:
+            if p["t"] == "car" and abs(p["x"] - px) < 40 and abs(p["y"] - py) < 40:
+                return False
+        return True
+
+    def _historic_parking(self):
+        """Автопарк тех лет вдоль проспектов и во дворах: копейки, девятки, E34.
+
+        Улицы «живые»: у края полосы стоят машины, между ними — редкие
+        прохожие; в дворах — «иномарки» у подъездов и «жигули» у гаражей.
+        """
+        rnd = self.rnd
+        rows = [12, 14, 30, 32, 44, 46]          # ряды припаркованных полос
+        for row in rows:
+            tx = 3
+            while tx < self.w - 3:
+                step = rnd.choice((3, 3, 4))
+                if rnd.random() < 0.72:
+                    px = tx * TILE + TILE // 2
+                    py = row * TILE + TILE // 2
+                    if self.car_spot_free(px, py):
+                        ang = 0 if rnd.random() < 0.8 else 180
+                        self.add_car(px, py, angle=ang, parked=True)
+                tx += step
+        # дворы: у подъездов — «девятки» и пару «бэшек» на квартал
+        yard_spots = [(7, 24), (12, 25), (17, 24), (31, 24), (36, 25),
+                      (63, 24), (68, 25), (73, 24), (7, 40), (12, 41),
+                      (63, 40), (68, 41), (85, 42), (31, 40), (36, 41)]
+        for i, (tx, ty) in enumerate(yard_spots):
+            px, py = tx * TILE + TILE // 2, ty * TILE + TILE // 2
+            if not self.car_spot_free(px, py):
+                continue
+            model = rnd.choice(("vaz2101", "vaz2101", "vaz2109",
+                                "vaz2109", "vaz2109", "bmwe34"))
+            self.add_car(px, py, angle=rnd.choice((90, 270)),
+                         parked=True, model=model)
+        # «блатные» E34 у рынка и у лучшего подъезда
+        for (tx, ty) in [(57, 15), (76, 33), (24, 47)]:
+            px, py = tx * TILE + TILE // 2, ty * TILE + TILE // 2
+            if self.car_spot_free(px, py):
+                self.add_car(px, py, angle=0, parked=True, model="bmwe34")
 
     # ------------------------------------------------------- генерация карты
     def build(self):
@@ -452,6 +602,9 @@ class District:
         return self
 
     def ground_at_px(self, px, py):
+        lvl = self.active_grid()
+        if lvl is not None:
+            return lvl["floor"]
         tx, ty = int(px // TILE), int(py // TILE)
         tx = max(0, min(self.w - 1, tx))
         ty = max(0, min(self.h - 1, ty))
@@ -461,16 +614,32 @@ class District:
         return SURFACE_SOUND.get(self.ground_at_px(px, py), "asphalt")
 
     def circle_blocked(self, px, py, r):
-        """Пересекает ли круг непроходимую область (стены/вода/пропы)."""
-        # грубая проверка по 8 точкам окружности + центру
-        pts = [(px, py)]
-        for k in range(8):
-            a = k * math.tau / 8
-            pts.append((px + math.cos(a) * r, py + math.sin(a) * r))
-        for x, y in pts:
-            tx, ty = int(x // TILE), int(y // TILE)
-            if self.is_solid_tile(tx, ty):
+        """Пересекает ли круг непроходимую область (стены/вода/пропы).
+
+        Если активен интерьер здания — коллизии идут по его мини-сетке.
+        """
+        lvl = self.active_grid()
+        if lvl is not None:
+            if self.circle_blocked_level(lvl, px, py, r):
                 return True
+            for p in lvl["props"]:
+                if not p.get("solid"):
+                    continue
+                dx, dy = p["x"] - px, p["y"] - py
+                rr = r + p.get("r", 10)
+                if dx * dx + dy * dy < rr * rr:
+                    return True
+            return False
+        # точная проверка: растеризуем круг по клеткам сетки
+        x0 = int((px - r) // TILE); x1 = int((px + r) // TILE)
+        y0 = int((py - r) // TILE); y1 = int((py + r) // TILE)
+        for ty in range(y0, y1 + 1):
+            for tx in range(x0, x1 + 1):
+                if self.is_solid_tile(tx, ty):
+                    cx = max(tx * TILE, min(px, tx * TILE + TILE))
+                    cy = max(ty * TILE, min(py, ty * TILE + TILE))
+                    if (cx - px) ** 2 + (cy - py) ** 2 < r * r:
+                        return True
         for p in self.props:
             if not p.get("solid"):
                 continue

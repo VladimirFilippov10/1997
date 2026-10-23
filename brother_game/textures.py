@@ -88,75 +88,218 @@ def mottle(size, colors, seed, blobs=40):
 
 # --------------------------------------------------------------- тайлы земли
 def asphalt(size=64, seed=1):
-    s = noise_surface((size, size), (58, 60, 64), 40, seed, octaves=4)
+    """Асфальт: многослойный шум + «жирные» пятна старого покрытия,
+    латки ремонтных служб,Aggregate-вкрапления гравия, трещины-«паутинка»."""
+    s = noise_surface((size, size), (58, 60, 64), 44, seed, octaves=5)
     rnd = _rng(seed)
-    # трещины
-    for _ in range(3):
-        pts = []
+    # вкрапления гравия (светлые/тёмные точки)
+    for _ in range(size * size // 26):
         x, y = rnd.randrange(size), rnd.randrange(size)
-        for _ in range(6):
-            pts.append((x, y))
-            x += rnd.randint(-9, 9)
-            y += rnd.randint(-9, 9)
-        if len(pts) > 1:
-            pygame.draw.lines(s, (40, 41, 45), False, pts, 1)
+        v = rnd.randint(-26, 30)
+        c = tuple(max(0, min(255, 58 + v + rnd.randint(-4, 4))) for _ in range(3))
+        s.set_at((x, y), ((c[0] + 8, c[1] + 6, c[2] + 4) if v > 12 else c))
+    # битумные пятна («масляные разводы» из гаражей)
+    for _ in range(2):
+        cx, cy = rnd.randrange(size), rnd.randrange(size)
+        rr = rnd.randint(4, 9)
+        patch = pygame.Surface((rr * 2, rr * 2), pygame.SRCALPHA)
+        for i in range(rr, 0, -1):
+            a = int(26 * (1 - i / rr))
+            pygame.draw.circle(patch, (26, 26, 30, a), (rr, rr), i)
+        s.blit(patch, (cx - rr, cy - rr))
+    # латок ремонта (прямоугольный, темнее и ровнее)
+    if rnd.random() < 0.3:
+        px_, py_ = rnd.randrange(size - 18), rnd.randrange(size - 12)
+        pw, ph = rnd.randint(12, 20), rnd.randint(8, 14)
+        p = noise_surface((pw, ph), (48, 49, 52), 18, seed + 31, octaves=2)
+        s.blit(p, (px_, py_))
+        pygame.draw.rect(s, (42, 43, 46), (px_, py_, pw, ph), 1)
+    # трещины — ветвящиеся «паутинки»
+    for _ in range(3):
+        x, y = rnd.randrange(size), rnd.randrange(size)
+        pts = [(x, y)]
+        ang = rnd.uniform(0, math.tau)
+        for _ in range(7):
+            ang += rnd.uniform(-0.8, 0.8)
+            x += math.cos(ang) * rnd.randint(3, 8)
+            y += math.sin(ang) * rnd.randint(3, 8)
+            pts.append((int(x), int(y)))
+        pygame.draw.lines(s, (38, 39, 43), False, pts, 1)
+        if rnd.random() < 0.6:      # ответвление
+            k = rnd.randrange(len(pts) - 1)
+            bx, by = pts[k]
+            pygame.draw.line(s, (40, 41, 45), (bx, by),
+                             (bx + rnd.randint(-8, 8), by + rnd.randint(-8, 8)), 1)
     return s
 
 
 def concrete(size=64, seed=2):
-    s = noise_surface((size, size), (96, 96, 98), 26, seed, octaves=3)
+    """Бетонные плиты тротуара: шагрень, температурные швы, сколы, мох в швах."""
+    s = noise_surface((size, size), (98, 98, 100), 30, seed, octaves=4)
     rnd = _rng(seed)
-    col = (78, 78, 82)
+    # поверхностная шагрень — микроямки
+    for _ in range(size * size // 40):
+        x, y = rnd.randrange(size), rnd.randrange(size)
+        d = rnd.randint(-16, 10)
+        base = s.get_at((x, y))
+        s.set_at((x, y), tuple(max(0, min(255, v + d)) for v in base[:3]))
+    col = (76, 76, 80)
     step = size // 2
     for i in range(0, size + 1, step):
         pygame.draw.line(s, col, (i, 0), (i, size), 1)
+        pygame.draw.line(s, (116, 116, 118), (i + 1, 0), (i + 1, size), 1)
         pygame.draw.line(s, col, (0, i), (size, i), 1)
+        pygame.draw.line(s, (116, 116, 118), (0, i + 1), (size, i + 1), 1)
+    # сколы углов плит и потёки
+    for _ in range(2):
+        cx, cy = rnd.randrange(step, size, step), rnd.randrange(step, size, step)
+        for _ in range(rnd.randint(3, 6)):
+            dx, dy = rnd.randint(-6, 6), rnd.randint(-6, 6)
+            pygame.draw.circle(s, (82, 82, 84),
+                               (max(0, min(size - 1, cx + dx)),
+                                max(0, min(size - 1, cy + dy))), rnd.randint(1, 2))
+    if rnd.random() < 0.35:   # зелень у шва — классика питерских тротуаров
+        gx = rnd.randrange(0, size)
+        for gy in range(0, size, 3):
+            pygame.draw.line(s, (70, 92, 62), (gx, gy), (gx + rnd.randint(-2, 2), gy + 2), 1)
     return s
 
 
 def brick_pavement(size=64, seed=3):
-    """«Ёлочка» из кирпичей — типичный питерский тротуар."""
-    s = pygame.Surface((size, size))
-    s.fill((70, 66, 64))
+    """Брусчатка «ёлочкой» — типичный питерский тротуар.
+
+    Кирпичи лежат под 45°, у каждого своя грань света/тени и микропросвет
+    шва; местами — провалы, выбоины и patches нового кирпича.
+    """
     rnd = _rng(seed)
-    bw, bh = 16, 8
-    y = 0
-    while y < size:
-        x = 0
-        while x < size:
-            c = (rnd.randint(88, 108), rnd.randint(70, 86), rnd.randint(62, 74))
-            r = pygame.Rect(x, y, bw - 1, bh - 1)
-            s.fill(c, r)
-            x += bw
-        y += bh
-    g = noise_surface((size, size), (0, 0, 0), 20, seed + 11)
-    g.set_alpha(60)
+    # рисуем крупнее и режем по центру — диагональная кладка без «ступенек»
+    pad = size
+    big = pygame.Surface((size + pad * 2, size + pad * 2))
+    big.fill((62, 58, 56))                       # песок/швы
+    bw, bh = 15, 7
+    hue = rnd.choice([(96, 78, 66), (88, 82, 80), (104, 84, 70)])
+    for row_i, yy in enumerate(range(-bh, big.get_height(), bh)):
+        off = (row_i % 2) * (bw // 2)
+        for xx in range(-bw + off, big.get_width(), bw):
+            v = rnd.uniform(0.82, 1.18)
+            c = tuple(max(0, min(255, int(ch * v))) for ch in hue)
+            r = pygame.Rect(xx + 1, yy + 1, bw - 2, bh - 2)
+            big.fill(c, r)
+            # фаска: верхняя кромка светлее, нижная темнее
+            top = tuple(min(255, int(ch * 1.25)) for ch in c)
+            bot = tuple(int(ch * 0.7) for ch in c)
+            pygame.draw.line(big, top, r.topleft, (r.right - 1, r.top))
+            pygame.draw.line(big, bot, r.bottomleft, (r.right - 1, r.bottom - 1))
+            if rnd.random() < 0.05:              # скол/трещина на кирпиче
+                pygame.draw.line(big, (54, 50, 48),
+                                 (rnd.randrange(r.left, r.right), r.top),
+                                 (rnd.randrange(r.left, r.right), r.bottom), 1)
+    diag = pygame.transform.rotate(big, 45)
+    s = pygame.Surface((size, size))
+    rect = diag.get_rect(center=(s.get_width() // 2, s.get_height() // 2))
+    s.blit(diag, rect)
+    # выбоины — просел шов, видна земля
+    for _ in range(2):
+        cx, cy = rnd.randrange(size), rnd.randrange(size)
+        pygame.draw.circle(s, (56, 50, 44), (cx, cy), rnd.randint(2, 4))
+    # заплатка свежего асфальта вокруг колодца — частая картина
+    if rnd.random() < 0.25:
+        cx, cy = rnd.randrange(size), rnd.randrange(size)
+        pygame.draw.circle(s, (66, 66, 70), (cx, cy), 9)
+        pygame.draw.circle(s, (52, 52, 56), (cx, cy), 9, 1)
+    g = noise_surface((size, size), (0, 0, 0), 22, seed + 11)
+    g.set_alpha(64)
     s.blit(g, (0, 0))
     return s
 
 
 def grass(size=64, seed=4):
-    s = mottle((size, size), [(52, 68, 48), (46, 62, 44), (58, 74, 52)], seed, 30)
+    """Газон после питерского лета: пятна разной высоты, примятые дорожки,
+    одуванчики-«лысины», торчащая былинками трава."""
     rnd = _rng(seed)
-    for _ in range(120):
+    s = mottle((size, size), [(52, 68, 48), (46, 62, 44), (58, 74, 52),
+                              (50, 64, 42), (64, 80, 54)], seed, 46)
+    # «примятые тропинки» — люди ходят по короткой траве
+    for _ in range(2):
+        pts = []
         x, y = rnd.randrange(size), rnd.randrange(size)
-        pygame.draw.line(s, (62, 82, 54), (x, y), (x + rnd.randint(-1, 1), y - 2), 1)
+        ang = rnd.uniform(0, math.tau)
+        for _ in range(8):
+            ang += rnd.uniform(-0.5, 0.5)
+            x += math.cos(ang) * 6
+            y += math.sin(ang) * 6
+            pts.append((int(x), int(y)))
+        pygame.draw.lines(s, (74, 84, 58), False, pts, 3)
+    # былинки: вертикальные штрихи с бликом/тенью
+    for _ in range(200):
+        x, y = rnd.randrange(size), rnd.randrange(size)
+        hgt = rnd.randint(2, 4)
+        lit = rnd.random() < 0.4
+        col = (86, 110, 66) if lit else (40, 56, 38)
+        pygame.draw.line(s, col, (x, y), (x + rnd.randint(-1, 1), y - hgt), 1)
+    # жухлые кустики
+    for _ in range(8):
+        x, y = rnd.randrange(size), rnd.randrange(size)
+        for a in range(-2, 3):
+            pygame.draw.line(s, (110, 100, 60), (x, y), (x + a * 2, y - 3), 1)
     return s
 
 
 def water(size=128, seed=5):
-    s = noise_surface((size, size), (34, 48, 62), 22, seed, octaves=3)
+    """Канал: глубокая вода с рябью, бликами неба и мусором у берега."""
     rnd = _rng(seed)
-    for _ in range(40):
+    s = noise_surface((size, size), (34, 48, 62), 20, seed, octaves=4)
+    # донные тени — тёмные размытые полосы глубже
+    for _ in range(6):
+        y = rnd.randrange(size)
+        pygame.draw.line(s, (26, 38, 52), (0, y), (size, y + rnd.randint(-6, 6)),
+                         rnd.randint(4, 10))
+    # рябь: короткие горизонтальные блики двух тонов
+    for _ in range(70):
         y = rnd.randrange(size)
         x = rnd.randrange(size)
-        ln = rnd.randint(6, 26)
-        pygame.draw.line(s, (58, 78, 96), (x, y), (x + ln, y), 1)
+        ln = rnd.randint(5, 24)
+        bright = rnd.random() < 0.3
+        col = (96, 122, 148) if bright else (56, 76, 94)
+        pygame.draw.line(s, col, (x, y), (x + ln, y), 1)
+        if bright:
+            pygame.draw.line(s, (40, 54, 70), (x, y + 1), (x + ln, y + 1), 1)
+    # масляная плёнка — радужные разводы
+    film = pygame.Surface((size, size), pygame.SRCALPHA)
+    for _ in range(4):
+        cx, cy = rnd.randrange(size), rnd.randrange(size)
+        rr = rnd.randint(10, 26)
+        pygame.draw.circle(film, (90, 120, 110, 14), (cx, cy), rr)
+        pygame.draw.circle(film, (120, 90, 120, 10), (cx + 4, cy - 3), rr - 4)
+    s.blit(film, (0, 0))
+    # пена/мусор у стенки набережной (верх тайла)
+    for x in range(0, size, 3):
+        if rnd.random() < 0.5:
+            pygame.draw.line(s, (120, 130, 132), (x, 1), (x + 2, 2), 1)
     return s
 
 
 def sand(size=64, seed=6):
-    return mottle((size, size), [(92, 86, 70), (84, 78, 64), (100, 94, 76)], seed, 24)
+    """Песок детской площадки: волны от граблей, камни, следы."""
+    rnd = _rng(seed)
+    s = mottle((size, size), [(92, 86, 70), (84, 78, 64), (100, 94, 76),
+                              (96, 90, 72)], seed, 34)
+    # «волны» утрамбованного песка
+    for i in range(0, size, 6):
+        pts = [(x, i + int(2 * math.sin(x * 0.25 + seed))) for x in range(0, size, 4)]
+        pygame.draw.lines(s, (104, 98, 80), False, pts, 1)
+        pygame.draw.lines(s, (80, 74, 60), False,
+                          [(x, y + 1) for x, y in pts], 1)
+    # камешки и стеклышки
+    for _ in range(14):
+        x, y = rnd.randrange(size), rnd.randrange(size)
+        pygame.draw.circle(s, (120, 116, 104), (x, y), 1)
+        if rnd.random() < 0.2:
+            pygame.draw.circle(s, (150, 150, 140), (x, y), 1)
+    # след кроссовка
+    fx, fy = rnd.randrange(4, size - 8), rnd.randrange(4, size - 8)
+    pygame.draw.ellipse(s, (76, 70, 58), (fx, fy, 5, 9))
+    return s
 
 
 def wall_face(size=64, seed=7):
@@ -180,17 +323,39 @@ def roof_face(size=64, seed=8):
 
 # ------------------------------------------------------- плоские объекты
 def curb_tile(size=48, seed=9, ground=(58, 60, 64)):
-    """Бордюр: полоса асфальта + светлый камень."""
+    """Бордюр: полоса асфальта + гранитные камни с фаской и тенями."""
+    rnd = _rng(seed)
     s = pygame.Surface((size, size), pygame.SRCALPHA)
     s.fill((*ground, 255))
-    pygame.draw.rect(s, (128, 128, 130), (0, size // 2 - 3, size, 6))
-    pygame.draw.rect(s, (150, 150, 152), (0, size // 2 - 3, size, 2))
+    # slight асфальтовая «канавка» у камня
+    pygame.draw.rect(s, (50, 51, 55, 255), (0, size // 2 - 5, size, 2))
+    y0 = size // 2 - 3
+    x = -(rnd.randrange(6))
+    while x < size:
+        pw = rnd.choice((8, 10, 12))
+        c = (132, 132, 134) if rnd.random() < 0.5 else (120, 120, 124)
+        pygame.draw.rect(s, c, (x, y0, min(pw, size - x), 6))
+        pygame.draw.line(s, (158, 158, 160), (x, y0), (x + pw - 1, y0))
+        pygame.draw.line(s, (92, 92, 96), (x, y0 + 5), (x + pw - 1, y0 + 5))
+        pygame.draw.line(s, (88, 88, 92), (x + pw - 1, y0), (x + pw - 1, y0 + 5))
+        x += pw
     return s
 
 
 def road_marking(size=48, seed=10):
+    """Дорожная разметка: стёртая краска поверх старого асфальта."""
+    rnd = _rng(seed)
     s = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.rect(s, (190, 188, 170), (size // 2 - 2, 6, 4, size - 12))
+    x0 = size // 2 - 2
+    for dx in range(5):
+        a = 210 - dx * 26
+        col = (196, 194, 176, max(0, a - rnd.randint(0, 30)))
+        pygame.draw.line(s, col, (x0 + dx, 6), (x0 + dx, size - 12), 1)
+    # сколы/протёртости краски
+    for _ in range(5):
+        y = rnd.randrange(8, size - 12)
+        pygame.draw.line(s, (58, 60, 64, 200), (x0 + 1, y),
+                         (x0 + rnd.randint(1, 3), y + 1), 1)
     return s
 
 
@@ -198,15 +363,85 @@ def puddle(size=48, seed=11):
     rnd = _rng(seed)
     s = pygame.Surface((size, size), pygame.SRCALPHA)
     w, h = size // 2 + rnd.randint(-4, 4), size // 3 + rnd.randint(-3, 3)
-    pygame.draw.ellipse(s, (40, 52, 66, 190), (size // 2 - w // 2, size // 2 - h // 2, w, h))
-    pygame.draw.ellipse(s, (70, 88, 108, 120), (size // 2 - w // 2 + 2, size // 2 - h // 2 + 1, w - 4, 3), 1)
+    cx, cy = size // 2, size // 2
+    pygame.draw.ellipse(s, (36, 48, 62, 200), (cx - w // 2, cy - h // 2, w, h))
+    # отражение неба — светлее сверху, тёмное дно снизу
+    pygame.draw.ellipse(s, (74, 92, 112, 120),
+                        (cx - w // 2 + 2, cy - h // 2 + 1, w - 4, h // 2))
+    pygame.draw.ellipse(s, (58, 74, 92, 90),
+                        (cx - w // 2 + 2, cy + h // 2 - 4, w - 4, 3))
+    # грязный ободок с мусором
+    pygame.draw.ellipse(s, (48, 50, 46, 110),
+                        (cx - w // 2 - 1, cy - h // 2 - 1, w + 2, h + 2), 1)
+    for _ in range(3):
+        pygame.draw.circle(s, (90, 96, 88, 120),
+                           (rnd.randrange(cx - w // 2, cx + w // 2),
+                            rnd.randrange(cy - h // 2, cy + h // 2)), 1)
     return s
 
 
 def crosswalk(size=48):
+    """«Зебра»: полосыpainter со стёртостью и следами шин."""
+    rnd = _rng(17)
     s = pygame.Surface((size, size), pygame.SRCALPHA)
     for i in range(3):
-        pygame.draw.rect(s, (180, 180, 172), (i * (size // 3) + 3, 0, size // 3 - 6, size))
+        x0 = i * (size // 3) + 3
+        w = size // 3 - 6
+        for dx in range(w):
+            a = 185 - abs(dx - w // 2) * 8 + rnd.randint(-14, 6)
+            pygame.draw.line(s, (188, 186, 176, max(60, a)),
+                             (x0 + dx, 0), (x0 + dx, size))
+        # следы торможения поперёк полосы
+        ty = rnd.randrange(6, size - 6)
+        pygame.draw.line(s, (120, 118, 110, 90), (x0, ty), (x0 + w, ty + 1), 2)
+    return s
+
+
+def yard_surface(size, seed):
+    """Дворовый бетон: разбитые плиты, трещины с травой, масляные лужи,
+    следы шин и песочные присыпки у подъездов."""
+    rnd = _rng(seed)
+    s = noise_surface((size, size), (74, 74, 72), 30, seed, octaves=4)
+    # плитами 1/4 тайла со швами-«тенями»
+    step = max(12, size // 4)
+    for i in range(0, size + 1, step):
+        pygame.draw.line(s, (56, 56, 56), (i, 0), (i, size))
+        pygame.draw.line(s, (92, 92, 90), (min(i + 1, size - 1), 0),
+                         (min(i + 1, size - 1), size))
+        pygame.draw.line(s, (56, 56, 56), (0, i), (size, i))
+        pygame.draw.line(s, (92, 92, 90), (0, min(i + 1, size - 1)),
+                         (size, min(i + 1, size - 1)))
+    # «паутинные» трещины по плитам, в них — мох
+    for _ in range(3):
+        x, y = rnd.randrange(size), rnd.randrange(size)
+        ang = rnd.uniform(0, math.tau)
+        pts = [(x, y)]
+        for _ in range(8):
+            ang += rnd.uniform(-0.9, 0.9)
+            x += math.cos(ang) * rnd.randint(3, 7)
+            y += math.sin(ang) * rnd.randint(3, 7)
+            pts.append((int(x), int(y)))
+        pygame.draw.lines(s, (50, 51, 50), False, pts, 1)
+        for k in range(1, len(pts) - 1, 3):
+            if rnd.random() < 0.5:
+                pygame.draw.line(s, (66, 84, 56), pts[k],
+                                 (pts[k][0] + 1, pts[k][1] + 1), 1)
+    # масляные пятна у гаражей/съездов
+    for _ in range(2):
+        cx, cy = rnd.randrange(size), rnd.randrange(size)
+        rr = rnd.randint(4, 10)
+        p = pygame.Surface((rr * 2, rr * 2), pygame.SRCALPHA)
+        pygame.draw.ellipse(p, (30, 30, 34, 130), (0, 0, rr * 2, rr * 2 - 2))
+        s.blit(p, (cx - rr, cy - rr))
+    # присыпка песка у подъезда (летом подметают с песком)
+    if rnd.random() < 0.4:
+        px_, py_ = rnd.randrange(size), rnd.randrange(size)
+        for _ in range(60):
+            dx, dy = rnd.gauss(0, 6), rnd.gauss(0, 4)
+            x = max(0, min(size - 1, int(px_ + dx)))
+            y = max(0, min(size - 1, int(py_ + dy)))
+            c = (rnd.randint(104, 122), rnd.randint(98, 112), rnd.randint(78, 90))
+            s.set_at((x, y), c)
     return s
 
 
